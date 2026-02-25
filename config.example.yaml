@@ -1,0 +1,42 @@
+# Jama Connect Configuration
+jama:
+  base_url: "https://your-instance.jamacloud.com"
+  username: "sync_agent_user"
+  password: "${JAMA_PASSWORD}"  # Use environment variable
+  project_id: 12345
+
+# Target Tool Configuration
+target_tool:
+  tool_type: "azure_devops"  # Options: azure_devops, gitlab, jira
+  base_url: "https://dev.azure.com/your-org"
+  pat: "${ADO_PAT}"  # Personal Access Token from environment variable
+  project: "YourProject"
+
+# Sync Behavior Configuration
+sync:
+  polling_interval: 60  # Seconds between Jama polls
+  direction: "bidirectional"  # Options: bidirectional, jama_to_target, target_to_jama
+
+# Status Mappings (Jama status <-> Target tool status)
+status_mappings:
+  - jama: "Draft"
+    target: "New"
+  - jama: "In Review"
+    target: "Active"
+  - jama: "Approved"
+    target: "Active"
+  - jama: "In Development"
+    target: "Active"
+  - jama: "Implemented"
+    target: "Resolved"
+  - jama: "Verified"
+    target: "Closed"
+  - jama: "Rejected"
+    target: "Removed"
+
+# Field Mappings (Jama field -> Target tool field)
+field_mappings:
+  name: "title"
+  description: "description"
+  priority: "priority"
+  status: "state"
