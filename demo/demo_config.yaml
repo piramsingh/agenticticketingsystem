@@ -1,0 +1,34 @@
+# Demo configuration for Jama Sync Agent
+# This uses mock clients and doesn't require real API access
+
+jama:
+  base_url: "https://demo.jamacloud.com"
+  username: "demo_user"
+  password: "demo_password"  # No real credentials needed for demo
+  project_id: 12345
+
+target_tool:
+  tool_type: "azure_devops"
+  base_url: "https://dev.azure.com/demo-org"
+  pat: "demo_pat_token"  # No real token needed for demo
+  project: "DemoProject"
+
+sync:
+  polling_interval: 10  # Poll every 10 seconds for demo
+  direction: "bidirectional"
+
+status_mappings:
+  - jama: "Draft"
+    target: "New"
+  - jama: "Approved"
+    target: "Active"
+  - jama: "Implemented"
+    target: "Resolved"
+  - jama: "Verified"
+    target: "Closed"
+
+field_mappings:
+  name: "title"
+  description: "description"
+  priority: "priority"
+  status: "state"

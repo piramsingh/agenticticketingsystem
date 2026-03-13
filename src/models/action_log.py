@@ -57,9 +57,17 @@ class ActionLog(Base):
         Prevent updates to ActionLog entries after creation.
         Enforces immutability at application level.
         """
+        # Allow SQLAlchemy internal attributes
+        if key.startswith('_sa_'):
+            object.__setattr__(self, key, value)
+            return
+        
         # Allow setting attributes during initialization (when id is None)
-        if hasattr(self, 'id') and self.id is not None:
-            raise ValueError("ActionLog entries are immutable and cannot be modified")
+        if hasattr(self, '_sa_instance_state'):
+            # Object is instrumented by SQLAlchemy
+            if hasattr(self, 'id') and self.id is not None:
+                raise ValueError("ActionLog entries are immutable and cannot be modified")
+        
         super().__setattr__(key, value)
     
     def to_dict(self) -> dict:

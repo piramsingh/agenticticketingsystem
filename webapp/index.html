@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agentic Ticketing — Bio-Rad POC</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #f5f5f7;
+            color: #1d1d1f;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* ── Header ── */
+        header {
+            background: white;
+            border-bottom: 1px solid #e5e5ea;
+            padding: 0 2rem;
+            height: 56px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-weight: 600;
+            font-size: 1rem;
+            color: #1d1d1f;
+        }
+
+        .brand-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #30d158;
+            box-shadow: 0 0 0 3px rgba(48, 209, 88, 0.2);
+        }
+
+        .badge {
+            font-size: 0.7rem;
+            font-weight: 500;
+            background: #f0f0f5;
+            color: #6e6e80;
+            padding: 3px 8px;
+            border-radius: 20px;
+        }
+
+        /* ── Page layout ── */
+        .page {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 3rem 1.5rem 2rem;
+            max-width: 760px;
+            margin: 0 auto;
+            width: 100%;
+        }
+
+        /* ── Hero ── */
+        .hero {
+            text-align: center;
+            margin-bottom: 2.5rem;
+        }
+
+        .hero h1 {
+            font-size: 2rem;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+            margin-bottom: 0.6rem;
+        }
+
+        .hero h1 span {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .hero p {
+            color: #6e6e80;
+            font-size: 1rem;
+            line-height: 1.6;
+            max-width: 480px;
+            margin: 0 auto;
+        }
+
+        /* ── Examples ── */
+        .examples {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            justify-content: center;
+            margin-bottom: 1.5rem;
+        }
+
+        .example-chip {
+            background: white;
+            border: 1px solid #e5e5ea;
+            border-radius: 20px;
+            padding: 0.4rem 0.9rem;
+            font-size: 0.8rem;
+            color: #444;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .example-chip:hover {
+            border-color: #764ba2;
+            color: #764ba2;
+            background: #faf5ff;
+        }
+
+        /* ── Chat box ── */
+        .chat-box {
+            background: white;
+            border-radius: 16px;
+            border: 1px solid #e5e5ea;
+            box-shadow: 0 2px 16px rgba(0,0,0,0.06);
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .chat-messages {
+            padding: 1.5rem;
+            min-height: 300px;
+            max-height: 460px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
+
+        /* ── Messages ── */
+        .msg {
+            display: flex;
+            gap: 0.75rem;
+            align-items: flex-start;
+        }
+
+        .msg.user { flex-direction: row-reverse; }
+
+        .avatar {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.75rem;
+            font-weight: 600;
+            flex-shrink: 0;
+        }
+
+        .avatar.bot {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+        }
+
+        .avatar.user { background: #e5e5ea; color: #444; }
+
+        .bubble {
+            max-width: 80%;
+            padding: 0.75rem 1rem;
+            border-radius: 12px;
+            font-size: 0.9rem;
+            line-height: 1.55;
+        }
+
+        .msg.bot .bubble {
+            background: #f5f5f7;
+            border-bottom-left-radius: 4px;
+        }
+
+        .msg.user .bubble {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+
+        /* ── Ticket result card ── */
+        .ticket-card {
+            background: white;
+            border: 1px solid #e5e5ea;
+            border-left: 3px solid #30d158;
+            border-radius: 10px;
+            padding: 0.9rem 1rem;
+            margin-top: 0.5rem;
+            font-size: 0.85rem;
+        }
+
+        .ticket-card .tc-header {
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            color: #1d1d1f;
+        }
+
+        .ticket-card .tc-row {
+            display: flex;
+            gap: 0.4rem;
+            align-items: center;
+            color: #6e6e80;
+            margin-bottom: 0.25rem;
+        }
+
+        .ticket-card a { color: #667eea; text-decoration: none; }
+        .ticket-card a:hover { text-decoration: underline; }
+
+        .system-badges {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: 0.6rem;
+            flex-wrap: wrap;
+        }
+
+        .sys-badge {
+            font-size: 0.72rem;
+            font-weight: 600;
+            padding: 2px 8px;
+            border-radius: 20px;
+            background: #f0f0f5;
+            color: #6e6e80;
+        }
+
+        .sys-badge.synced { background: #d1fae5; color: #065f46; }
+
+        /* ── Typing indicator ── */
+        .typing-dots {
+            display: flex;
+            gap: 4px;
+            align-items: center;
+            padding: 4px 0;
+        }
+
+        .typing-dots span {
+            width: 6px;
+            height: 6px;
+            background: #aaa;
+            border-radius: 50%;
+            animation: bounce 1.2s infinite;
+        }
+
+        .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+        .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+        @keyframes bounce {
+            0%, 60%, 100% { transform: translateY(0); }
+            30% { transform: translateY(-6px); }
+        }
+
+        /* ── Input area ── */
+        .chat-input-area {
+            border-top: 1px solid #e5e5ea;
+            padding: 0.75rem 1rem;
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+        }
+
+        .chat-input {
+            flex: 1;
+            border: 1px solid #e5e5ea;
+            border-radius: 10px;
+            padding: 0.65rem 1rem;
+            font-size: 0.9rem;
+            outline: none;
+            font-family: inherit;
+            transition: border-color 0.15s;
+        }
+
+        .chat-input:focus { border-color: #764ba2; }
+
+        .send-btn {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            padding: 0.65rem 1.2rem;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.15s;
+            white-space: nowrap;
+        }
+
+        .send-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+        .send-btn:not(:disabled):hover { opacity: 0.9; }
+
+        /* ── Footer hint ── */
+        .hint {
+            text-align: center;
+            font-size: 0.75rem;
+            color: #aaa;
+            margin-top: 1rem;
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <div class="brand">
+        <div class="brand-dot"></div>
+        Agentic Ticketing
+    </div>
+    <span class="badge">POC · Bio-Rad</span>
+</header>
+
+<div class="page">
+    <div class="hero">
+        <h1>Create tickets with <span>natural language</span></h1>
+        <p>Describe what you need — the AI creates a structured ticket in Azure DevOps and syncs a requirement to Jama Connect automatically.</p>
+    </div>
+
+    <div class="examples">
+        <button class="example-chip" onclick="fillExample(this)">🐛 Critical bug for login failure</button>
+        <button class="example-chip" onclick="fillExample(this)">✨ Feature request for dark mode</button>
+        <button class="example-chip" onclick="fillExample(this)">📋 Task to update the API docs</button>
+        <button class="example-chip" onclick="fillExample(this)">⚠️ High priority security vulnerability</button>
+    </div>
+
+    <div class="chat-box">
+        <div class="chat-messages" id="chatMessages">
+            <div class="msg bot">
+                <div class="avatar bot">AI</div>
+                <div class="bubble">
+                    👋 Hi! Describe a ticket in plain English and I'll create it in <strong>Azure DevOps</strong> and sync it to <strong>Jama Connect</strong> automatically.
+                </div>
+            </div>
+        </div>
+
+        <div class="chat-input-area">
+            <input
+                type="text"
+                class="chat-input"
+                id="chatInput"
+                placeholder="e.g. Create a high priority bug for the login timeout issue"
+                autocomplete="off"
+            />
+            <button class="send-btn" id="sendBtn" onclick="handleSend()">Send →</button>
+        </div>
+    </div>
+
+    <p class="hint">Press Enter to send</p>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
