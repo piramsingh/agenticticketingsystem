@@ -1,198 +1,159 @@
-"""Field and status mapping between Jama Connect and target tools"""
+"""
+Bidirectional field and status mapping between any two connectors.
+
+Previously hardwired to Jama↔target; now fully tool-agnostic.
+Direction strings are "source" and "target" throughout.
+"""
 import logging
-from typing import Dict, Any
+from typing import Any, Dict, Optional
 
-from src.config import AppConfig
-from src.models.data_models import JamaItem, TargetItem
-
+from ..config import AppConfig
+from ..models.ticket import TargetItem
 
 logger = logging.getLogger(__name__)
 
 
 class FieldMapper:
     """
-    Handles bidirectional field and status mapping between Jama Connect and target tools.
-    
-    This class transforms data between Jama's field structure and target tool field structures
-    using the mappings defined in the configuration. It handles missing fields gracefully
-    and logs warnings when fields cannot be mapped.
+    Transforms fields between source and target connectors using the
+    field_mappings and status_mappings defined in AppConfig.
+
+    Field mappings are keyed by the source-side field name and map to the
+    target-side field name (e.g. {"name": "summary", "status": "state"}).
+    Status mappings are a list of {source, target} pairs.
     """
-    
+
     def __init__(self, config: AppConfig):
-        """
-        Initialize the field mapper with configuration.
-        
-        Args:
-            config: Application configuration containing field and status mappings
-        """
         self.config = config
         self.status_mappings = config.status_mappings
         self.field_mappings = config.field_mappings
-    
-    def map_jama_to_target(self, jama_item: JamaItem) -> Dict[str, Any]:
+
+    # ── Source → Target ───────────────────────────────────────────────────────
+
+    def map_source_to_target(self, source_item: TargetItem) -> Dict[str, Any]:
         """
-        Transform Jama item fields to target tool format.
-        
-        Maps Jama field names to target tool field names according to the configuration.
-        Handles missing fields gracefully by logging warnings and continuing.
-        
+        Transform a TargetItem from the source connector into a field dict
+        suitable for the target connector's create/update methods.
+
         Args:
-            jama_item: Jama item to transform
-            
+            source_item: Item retrieved from the source connector.
+
         Returns:
-            Dictionary of target tool fields ready for API submission
+            Dict of target-side field names → values.
         """
-        target_fields = {}
-        
-        # Map standard fields using field_mappings configuration
-        jama_data = {
-            'name': jama_item.name,
-            'description': jama_item.description,
-            'priority': jama_item.priority,
-            'status': jama_item.status
+        source_data = {
+            "name":        source_item.title,
+            "description": source_item.description,
+            "priority":    source_item.priority,
+            "status":      source_item.status,
         }
-        
-        for jama_field, jama_value in jama_data.items():
-            target_field = self.config.get_field_mapping('jama', jama_field)
-            
+
+        target_fields: Dict[str, Any] = {}
+        for source_field, source_value in source_data.items():
+            target_field = self.config.get_field_mapping("source", source_field)
             if target_field is None:
-                logger.warning(
-                    f"No mapping found for Jama field '{jama_field}', skipping"
-                )
+                logger.warning("No mapping for source field '%s', skipping", source_field)
                 continue
-            
-            # Special handling for status field - needs status mapping
-            if jama_field == 'status':
-                mapped_status = self.map_status(jama_value, 'jama_to_target')
-                if mapped_status is not None:
-                    target_fields[target_field] = mapped_status
-                else:
-                    logger.warning(
-                        f"No status mapping found for Jama status '{jama_value}', "
-                        f"using original value"
-                    )
-                    target_fields[target_field] = jama_value
+            if source_field == "status":
+                mapped = self._map_status(source_value, "source_to_target")
+                target_fields[target_field] = mapped if mapped is not None else source_value
             else:
-                target_fields[target_field] = jama_value
-        
-        # Include any additional custom fields from jama_item.fields
-        for field_name, field_value in jama_item.fields.items():
-            target_field = self.config.get_field_mapping('jama', field_name)
+                target_fields[target_field] = source_value
+
+        # Pass through any extra custom fields the source exposed
+        for field_name, field_value in source_item.fields.items():
+            target_field = self.config.get_field_mapping("source", field_name)
             if target_field and target_field not in target_fields:
                 target_fields[target_field] = field_value
-        
-        logger.debug(
-            f"Mapped Jama item {jama_item.id} to target fields: {target_fields}"
-        )
-        
+
+        logger.debug("Mapped source item %s → target fields: %s", source_item.item_id, target_fields)
         return target_fields
-    
-    def map_target_to_jama(self, target_item: TargetItem) -> Dict[str, Any]:
+
+    # ── Target → Source ───────────────────────────────────────────────────────
+
+    def map_target_to_source(self, target_item: TargetItem) -> Dict[str, Any]:
         """
-        Transform target tool fields to Jama format.
-        
-        Maps target tool field names to Jama field names according to the configuration.
-        Handles missing fields gracefully by logging warnings and continuing.
-        
+        Transform a TargetItem from the target connector back into a field dict
+        for the source connector's update method.
+
         Args:
-            target_item: Target tool item to transform
-            
+            target_item: Item retrieved from the target connector.
+
         Returns:
-            Dictionary of Jama fields ready for API submission
+            Dict of source-side field names → values.
         """
-        jama_fields = {}
-        
-        # Build a mapping of TargetItem attribute names to their values
-        # We need to map these to the configured target field names first
-        target_item_data = {
-            'title': target_item.title,
-            'description': target_item.description,
-            'priority': target_item.priority,
-            'status': target_item.status
+        target_data = {
+            "title":       target_item.title,
+            "description": target_item.description,
+            "priority":    target_item.priority,
+            "status":      target_item.status,
         }
-        
-        # For each TargetItem attribute, find its configured target field name,
-        # then map that to the Jama field name
-        for item_attr, item_value in target_item_data.items():
-            # First, find what the configured target field name is for this attribute
-            # For most cases, the attribute name matches the configured field name
-            # But we need to handle the case where 'status' maps to 'state' in config
-            
-            # Find the Jama field that maps to this target attribute
-            jama_field = None
-            is_status_field = False
-            
-            for jama_f, target_f in self.field_mappings.items():
-                # Check if this target field matches our attribute
-                # Handle both direct matches and semantic matches (status/state)
-                if target_f == item_attr or (item_attr == 'status' and target_f == 'state'):
-                    jama_field = jama_f
-                    is_status_field = (jama_f == 'status')
+
+        source_fields: Dict[str, Any] = {}
+        for attr_name, attr_value in target_data.items():
+            # Find the source field that maps to this target attribute
+            source_field: Optional[str] = None
+            is_status = False
+            for src_f, tgt_f in self.field_mappings.items():
+                if tgt_f == attr_name or (attr_name == "status" and tgt_f in ("state", "status")):
+                    source_field = src_f
+                    is_status = (src_f == "status")
                     break
-            
-            if jama_field is None:
-                logger.warning(
-                    f"No mapping found for target attribute '{item_attr}', skipping"
-                )
+
+            if source_field is None:
+                logger.warning("No mapping for target attribute '%s', skipping", attr_name)
                 continue
-            
-            # Special handling for status field - needs status mapping
-            if is_status_field:
-                mapped_status = self.map_status(item_value, 'target_to_jama')
-                if mapped_status is not None:
-                    jama_fields[jama_field] = mapped_status
-                else:
-                    logger.warning(
-                        f"No status mapping found for target status '{item_value}', "
-                        f"using original value"
-                    )
-                    jama_fields[jama_field] = item_value
+
+            if is_status:
+                mapped = self._map_status(attr_value, "target_to_source")
+                source_fields[source_field] = mapped if mapped is not None else attr_value
             else:
-                jama_fields[jama_field] = item_value
-        
-        # Include any additional custom fields from target_item.fields
+                source_fields[source_field] = attr_value
+
+        # Pass through extra custom fields
         for field_name, field_value in target_item.fields.items():
-            jama_field = self.config.get_field_mapping('target', field_name)
-            if jama_field and jama_field not in jama_fields:
-                jama_fields[jama_field] = field_value
-        
-        logger.debug(
-            f"Mapped target item {target_item.item_id} to Jama fields: {jama_fields}"
-        )
-        
-        return jama_fields
-    
-    def map_status(self, status: str, direction: str) -> str | None:
+            source_field = self.config.get_field_mapping("target", field_name)
+            if source_field and source_field not in source_fields:
+                source_fields[source_field] = field_value
+
+        logger.debug("Mapped target item %s → source fields: %s", target_item.item_id, source_fields)
+        return source_fields
+
+    # ── Status mapping ────────────────────────────────────────────────────────
+
+    def map_status(self, status: str, direction: str) -> Optional[str]:
         """
-        Map status between systems with direction awareness.
-        
-        Performs bidirectional status mapping using the status_mappings configuration.
-        
+        Public status mapper — delegates to internal helper.
+
         Args:
-            status: Status value to map
-            direction: Mapping direction ('jama_to_target' or 'target_to_jama')
-            
+            status:    Status string to translate.
+            direction: "source_to_target" or "target_to_source".
+
         Returns:
-            Mapped status value or None if no mapping found
+            Mapped status string or None.
         """
-        if direction == 'jama_to_target':
-            mapped = self.config.get_status_mapping('jama', status)
-            if mapped is None:
-                logger.warning(
-                    f"No status mapping found for Jama status '{status}' "
-                    f"in direction {direction}"
-                )
-            return mapped
-        
-        elif direction == 'target_to_jama':
-            mapped = self.config.get_status_mapping('target', status)
-            if mapped is None:
-                logger.warning(
-                    f"No status mapping found for target status '{status}' "
-                    f"in direction {direction}"
-                )
-            return mapped
-        
+        return self._map_status(status, direction)
+
+    def _map_status(self, status: str, direction: str) -> Optional[str]:
+        if direction == "source_to_target":
+            mapped = self.config.get_status_mapping("source_to_target", status)
+        elif direction == "target_to_source":
+            mapped = self.config.get_status_mapping("target_to_source", status)
         else:
-            logger.error(f"Invalid mapping direction: {direction}")
+            logger.error("Invalid status mapping direction: %s", direction)
             return None
+
+        if mapped is None:
+            logger.warning("No status mapping for '%s' in direction '%s'", status, direction)
+        return mapped
+
+    # ── Backwards-compat aliases ──────────────────────────────────────────────
+    # Old code called map_jama_to_target / map_target_to_jama.
+
+    def map_jama_to_target(self, source_item: TargetItem) -> Dict[str, Any]:
+        """Deprecated — use map_source_to_target."""
+        return self.map_source_to_target(source_item)
+
+    def map_target_to_jama(self, target_item: TargetItem) -> Dict[str, Any]:
+        """Deprecated — use map_target_to_source."""
+        return self.map_target_to_source(target_item)

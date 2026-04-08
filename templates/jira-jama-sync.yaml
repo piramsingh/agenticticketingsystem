@@ -1,0 +1,64 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Template: Jama Connect ↔ Jira Cloud (bidirectional sync)
+# Jama is the source of truth for requirements; Jira is where dev work happens.
+# The sync engine keeps both sides in sync automatically.
+#
+# Required env vars:
+#   JAMA_DOMAIN      — your Jama domain (e.g. "mycompany" for mycompany.jamacloud.com)
+#   JAMA_PROJECT_ID  — numeric Jama project ID
+#   JAMA_USERNAME    — Jama username
+#   JAMA_PASSWORD    — Jama password
+#   JIRA_DOMAIN      — your Atlassian domain
+#   JIRA_PROJECT_KEY — Jira project key
+#   JIRA_EMAIL       — Atlassian account email
+#   JIRA_API_TOKEN   — Jira API token
+# ──────────────────────────────────────────────────────────────────────────────
+
+connectors:
+  - name: jama-source
+    tool_type: jama
+    base_url: "https://${JAMA_DOMAIN}.jamacloud.com"
+    project: "${JAMA_PROJECT_ID}"
+    auth:
+      type: basic
+      username: "${JAMA_USERNAME}"
+      password: "${JAMA_PASSWORD}"
+    extra:
+      project_id: "${JAMA_PROJECT_ID}"
+
+  - name: jira-target
+    tool_type: jira
+    base_url: "https://${JIRA_DOMAIN}.atlassian.net"
+    project: "${JIRA_PROJECT_KEY}"
+    auth:
+      type: api_token
+      email: "${JIRA_EMAIL}"
+      token: "${JIRA_API_TOKEN}"
+
+sync:
+  source: jama-source
+  target: jira-target
+  polling_interval: 60
+  direction: bidirectional
+
+status_mappings:
+  - source: "Draft"
+    target: "To Do"
+  - source: "In Review"
+    target: "In Progress"
+  - source: "Approved"
+    target: "In Progress"
+  - source: "In Development"
+    target: "In Progress"
+  - source: "Implemented"
+    target: "Done"
+  - source: "Verified"
+    target: "Done"
+  - source: "Rejected"
+    target: "Won't Do"
+
+field_mappings:
+  name: summary
+  description: description
+  priority: priority
+  status: status

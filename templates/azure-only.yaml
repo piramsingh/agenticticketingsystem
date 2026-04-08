@@ -1,0 +1,34 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Template: Azure DevOps only
+# Use this when you just want the AI chat agent + MCP — no sync required.
+#
+# Fill in your values or set the environment variables listed below.
+# Required env vars:
+#   ADO_ORG      — your Azure DevOps org name (e.g. "mycompany")
+#   ADO_PROJECT  — your project name (e.g. "MyApp")
+#   ADO_PAT      — Personal Access Token with Work Items (Read & Write) scope
+# ──────────────────────────────────────────────────────────────────────────────
+
+connectors:
+  - name: azure-main
+    tool_type: azure_devops
+    base_url: "https://dev.azure.com/${ADO_ORG}"
+    project: "${ADO_PROJECT}"
+    auth:
+      type: pat
+      token: "${ADO_PAT}"
+
+# When source == target, the poller is a no-op (no sync runs)
+sync:
+  source: azure-main
+  target: azure-main
+  polling_interval: 300
+  direction: source_to_target
+
+status_mappings: []
+
+field_mappings:
+  name: title
+  description: description
+  priority: priority
+  status: state

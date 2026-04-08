@@ -1,4 +1,9 @@
-"""Sync engine core orchestration logic"""
+"""
+Sync engine — tool-agnostic bidirectional orchestration.
+
+Replaces the Jama-specific JamaClient references with source_connector /
+target_connector (both BaseConnector), so any two connectors can be synced.
+"""
 import json
 import logging
 from datetime import datetime
@@ -7,441 +12,312 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from ..config import AppConfig
-from ..clients.jama_client import JamaClient
-from ..clients.connectors.base import BaseConnector
-from ..models.data_models import Activity, JamaItem, TargetItem, WebhookEvent
+from ..connectors.base import BaseConnector
+from ..models.ticket import Activity, TargetItem, WebhookEvent
 from ..models.mapping import SyncMapping
 from ..models.action_log import ActionLog
 from .mapper import FieldMapper
-
 
 logger = logging.getLogger(__name__)
 
 
 class SyncEngine:
     """
-    Core orchestration logic for bidirectional synchronization.
-    
-    Coordinates synchronization between Jama Connect and target tools,
-    handles conflict detection, respects sync direction configuration,
-    and maintains an immutable audit log.
+    Core orchestration logic for bidirectional synchronisation.
+
+    Coordinates sync between a source connector and a target connector.
+    Handles conflict detection, respects direction configuration, and
+    writes an immutable audit log for every action.
     """
-    
+
     def __init__(
         self,
         db_session: Session,
-        jama_client: JamaClient,
-        connector: BaseConnector,
+        source_connector: BaseConnector,
+        target_connector: BaseConnector,
         mapper: FieldMapper,
-        config: AppConfig
+        config: AppConfig,
     ):
-        """
-        Initialize sync engine.
-        
-        Args:
-            db_session: SQLAlchemy database session
-            jama_client: Jama Connect client
-            connector: Target tool connector
-            mapper: Field and status mapper
-            config: Application configuration
-        """
         self.db = db_session
-        self.jama_client = jama_client
-        self.connector = connector
+        self.source = source_connector
+        self.target = target_connector
         self.mapper = mapper
         self.config = config
-    
-    async def process_jama_update(self, activity: Activity) -> None:
+        # Human-readable names come from the sync config
+        self._source_name = config.sync.source
+        self._target_name = config.sync.target
+
+    # ── Source → Target ───────────────────────────────────────────────────────
+
+    async def process_source_update(self, activity: Activity) -> None:
         """
-        Handle new or updated Jama item.
-        
-        This method:
-        1. Checks if a mapping exists for the Jama item
-        2. For new items: creates target tool item, stores mapping, logs action
-        3. For existing items: checks for conflicts, updates target if safe
-        4. Respects sync direction configuration
-        
-        Args:
-            activity: Jama activity event
+        Handle a change detected in the source connector.
+
+        1. Fetches the full item from source.
+        2. Finds or creates a mapping record.
+        3. Creates / updates the item in the target connector.
         """
-        # Check sync direction - skip if target_to_jama only
-        if self.config.sync.direction == "target_to_jama":
+        if self.config.sync.direction == "target_to_source":
             logger.debug(
-                f"Skipping Jama update for item {activity.item_id} "
-                f"(sync direction is target_to_jama)"
+                "Skipping source update for item %s (direction is target_to_source)",
+                activity.item_id,
             )
             return
-        
+
         try:
-            # Get full item details from Jama
-            jama_item = await self.jama_client.get_item(activity.item_id)
-            
-            # Check if mapping exists
+            source_item = await self.source.get_item(str(activity.item_id))
+
             mapping = self.db.query(SyncMapping).filter_by(
                 jama_item_id=activity.item_id,
-                target_tool=self.config.target_tool.tool_type
+                target_tool=self._target_name,
             ).first()
-            
+
             if mapping is None:
-                # New item - create in target tool
-                await self._create_target_item(jama_item)
+                await self._create_target_item(source_item)
             else:
-                # Existing mapping - check for conflicts and update
-                await self._update_target_item(mapping, jama_item)
-                
+                await self._update_target_item(mapping, source_item)
+
         except Exception as e:
-            logger.error(
-                f"Failed to process Jama update for item {activity.item_id}: {e}",
-                exc_info=True
-            )
-            # Log error action
-            await self.log_action(
+            logger.error("Failed to process source update for item %s: %s", activity.item_id, e, exc_info=True)
+            await self._log_action(
                 action="sync_error",
-                source_tool="jama",
+                source_tool=self._source_name,
                 source_item_id=str(activity.item_id),
-                target_tool=self.config.target_tool.tool_type,
+                target_tool=self._target_name,
                 result="failed",
                 payload={"activity": activity.to_dict(), "error": str(e)},
-                error_detail=str(e)
+                error_detail=str(e),
             )
-    
-    async def _create_target_item(self, jama_item: JamaItem) -> None:
-        """
-        Create new item in target tool and store mapping.
-        
-        Args:
-            jama_item: Jama item to create in target tool
-        """
+
+    async def _create_target_item(self, source_item: TargetItem) -> None:
+        """Create a new item in the target connector and record the mapping."""
         try:
-            # Map Jama fields to target tool format
-            target_fields = self.mapper.map_jama_to_target(jama_item)
-            
-            # Create item in target tool
-            result = await self.connector.create_item(target_fields)
-            
-            # Store mapping
+            target_fields = self.mapper.map_source_to_target(source_item)
+            result = await self.target.create_item(target_fields)
+
             mapping = SyncMapping(
-                jama_item_id=jama_item.id,
-                jama_project_id=jama_item.project_id,
-                jama_item_type=jama_item.item_type,
-                target_tool=self.config.target_tool.tool_type,
+                jama_item_id=int(source_item.item_id) if source_item.item_id.isdigit() else 0,
+                jama_project_id=0,
+                jama_item_type="",
+                target_tool=self._target_name,
                 target_item_id=result.item_id,
                 target_item_url=result.item_url,
                 last_synced_at=datetime.utcnow(),
-                sync_status="active"
+                sync_status="active",
             )
             self.db.add(mapping)
             self.db.commit()
-            
-            # Log successful creation
-            await self.log_action(
+
+            await self._log_action(
                 action="create_ticket",
-                source_tool="jama",
-                source_item_id=str(jama_item.id),
-                target_tool=self.config.target_tool.tool_type,
+                source_tool=self._source_name,
+                source_item_id=source_item.item_id,
+                target_tool=self._target_name,
                 target_item_id=result.item_id,
                 result="success",
                 payload={
-                    "jama_item": jama_item.to_dict(),
+                    "source_item": source_item.to_dict(),
                     "target_fields": target_fields,
-                    "target_item_id": result.item_id,
-                    "target_item_url": result.item_url
-                }
+                    "target_item_url": result.item_url,
+                },
             )
-            
-            logger.info(
-                f"Created target item {result.item_id} for Jama item {jama_item.id}"
-            )
-            
+            logger.info("Created target item %s for source item %s", result.item_id, source_item.item_id)
+
         except Exception as e:
-            logger.error(
-                f"Failed to create target item for Jama item {jama_item.id}: {e}",
-                exc_info=True
-            )
-            # Log error
-            await self.log_action(
+            logger.error("Failed to create target item for source item %s: %s", source_item.item_id, e, exc_info=True)
+            await self._log_action(
                 action="create_ticket",
-                source_tool="jama",
-                source_item_id=str(jama_item.id),
-                target_tool=self.config.target_tool.tool_type,
+                source_tool=self._source_name,
+                source_item_id=source_item.item_id,
+                target_tool=self._target_name,
                 result="failed",
-                payload={"jama_item": jama_item.to_dict(), "error": str(e)},
-                error_detail=str(e)
+                payload={"source_item": source_item.to_dict(), "error": str(e)},
+                error_detail=str(e),
             )
             raise
-    
-    async def _update_target_item(
-        self,
-        mapping: SyncMapping,
-        jama_item: JamaItem
-    ) -> None:
-        """
-        Update existing target item, checking for conflicts first.
-        
-        Args:
-            mapping: Existing sync mapping
-            jama_item: Updated Jama item
-        """
-        # Skip if mapping is in conflict or error state
-        if mapping.sync_status == "conflict":
+
+    async def _update_target_item(self, mapping: SyncMapping, source_item: TargetItem) -> None:
+        """Update the mapped target item if there is no conflict."""
+        if mapping.sync_status in ("conflict", "error"):
             logger.warning(
-                f"Skipping update for Jama item {jama_item.id} - "
-                f"mapping is in conflict state"
+                "Skipping update for source item %s — mapping is in '%s' state",
+                source_item.item_id, mapping.sync_status,
             )
             return
-        
-        if mapping.sync_status == "error":
-            logger.warning(
-                f"Skipping update for Jama item {jama_item.id} - "
-                f"mapping is in error state"
-            )
-            return
-        
+
         try:
-            # Get current target item state
-            target_item = await self.connector.get_item(mapping.target_item_id)
-            
-            # Check for conflicts
-            if await self.detect_conflict(mapping, jama_item, target_item):
-                await self.handle_conflict(mapping, jama_item, target_item)
+            target_item = await self.target.get_item(mapping.target_item_id)
+
+            if await self.detect_conflict(mapping, source_item, target_item):
+                await self.handle_conflict(mapping, source_item, target_item)
                 return
-            
-            # No conflict - safe to update
-            target_fields = self.mapper.map_jama_to_target(jama_item)
-            await self.connector.update_item(mapping.target_item_id, target_fields)
-            
-            # Update mapping timestamp
+
+            target_fields = self.mapper.map_source_to_target(source_item)
+            await self.target.update_item(mapping.target_item_id, target_fields)
             mapping.last_synced_at = datetime.utcnow()
             self.db.commit()
-            
-            # Log successful update
-            await self.log_action(
+
+            await self._log_action(
                 action="update_status",
-                source_tool="jama",
-                source_item_id=str(jama_item.id),
-                target_tool=self.config.target_tool.tool_type,
+                source_tool=self._source_name,
+                source_item_id=source_item.item_id,
+                target_tool=self._target_name,
                 target_item_id=mapping.target_item_id,
                 result="success",
-                payload={
-                    "jama_item": jama_item.to_dict(),
-                    "target_fields": target_fields
-                }
+                payload={"source_item": source_item.to_dict(), "target_fields": target_fields},
             )
-            
-            logger.info(
-                f"Updated target item {mapping.target_item_id} "
-                f"from Jama item {jama_item.id}"
-            )
-            
+            logger.info("Updated target item %s from source item %s", mapping.target_item_id, source_item.item_id)
+
         except Exception as e:
-            logger.error(
-                f"Failed to update target item for Jama item {jama_item.id}: {e}",
-                exc_info=True
-            )
-            # Mark mapping as error
+            logger.error("Failed to update target item for source item %s: %s", source_item.item_id, e, exc_info=True)
             mapping.sync_status = "error"
             self.db.commit()
-            
-            # Log error
-            await self.log_action(
+            await self._log_action(
                 action="update_status",
-                source_tool="jama",
-                source_item_id=str(jama_item.id),
-                target_tool=self.config.target_tool.tool_type,
+                source_tool=self._source_name,
+                source_item_id=source_item.item_id,
+                target_tool=self._target_name,
                 target_item_id=mapping.target_item_id,
                 result="failed",
-                payload={"jama_item": jama_item.to_dict(), "error": str(e)},
-                error_detail=str(e)
+                payload={"source_item": source_item.to_dict(), "error": str(e)},
+                error_detail=str(e),
             )
-    
+
+    # ── Target → Source ───────────────────────────────────────────────────────
+
     async def process_target_update(self, event: WebhookEvent) -> None:
         """
-        Handle target tool webhook event.
-        
-        This method:
-        1. Looks up the mapping for the target item
-        2. Checks for conflicts
-        3. Updates Jama item if safe
-        4. Respects sync direction configuration
-        
-        Args:
-            event: Webhook event from target tool
+        Handle an inbound webhook event from the target connector.
+
+        1. Finds the mapping for the target item.
+        2. Checks for conflicts.
+        3. Pushes changes back to the source connector.
         """
-        # Check sync direction - skip if jama_to_target only
-        if self.config.sync.direction == "jama_to_target":
+        if self.config.sync.direction == "source_to_target":
             logger.debug(
-                f"Skipping target update for item {event.item_id} "
-                f"(sync direction is jama_to_target)"
+                "Skipping target update for item %s (direction is source_to_target)",
+                event.item_id,
             )
             return
-        
+
         try:
-            # Look up mapping
             mapping = self.db.query(SyncMapping).filter_by(
-                target_tool=self.config.target_tool.tool_type,
-                target_item_id=event.item_id
+                target_tool=self._target_name,
+                target_item_id=event.item_id,
             ).first()
-            
+
             if mapping is None:
+                logger.warning("No mapping found for target item %s, skipping", event.item_id)
+                return
+
+            if mapping.sync_status in ("conflict", "error"):
                 logger.warning(
-                    f"No mapping found for target item {event.item_id}, skipping"
+                    "Skipping target update for item %s — mapping is in '%s' state",
+                    event.item_id, mapping.sync_status,
                 )
                 return
-            
-            # Skip if mapping is in conflict or error state
-            if mapping.sync_status == "conflict":
-                logger.warning(
-                    f"Skipping update for target item {event.item_id} - "
-                    f"mapping is in conflict state"
-                )
+
+            source_item = await self.source.get_item(str(mapping.jama_item_id))
+            target_item = await self.target.get_item(event.item_id)
+
+            if await self.detect_conflict(mapping, source_item, target_item):
+                await self.handle_conflict(mapping, source_item, target_item)
                 return
-            
-            if mapping.sync_status == "error":
-                logger.warning(
-                    f"Skipping update for target item {event.item_id} - "
-                    f"mapping is in error state"
-                )
-                return
-            
-            # Get current states
-            jama_item = await self.jama_client.get_item(mapping.jama_item_id)
-            target_item = await self.connector.get_item(event.item_id)
-            
-            # Check for conflicts
-            if await self.detect_conflict(mapping, jama_item, target_item):
-                await self.handle_conflict(mapping, jama_item, target_item)
-                return
-            
-            # No conflict - safe to update Jama
-            jama_fields = self.mapper.map_target_to_jama(target_item)
-            await self.jama_client.update_item(mapping.jama_item_id, jama_fields)
-            
-            # Update mapping timestamp
+
+            source_fields = self.mapper.map_target_to_source(target_item)
+            await self.source.update_item(str(mapping.jama_item_id), source_fields)
             mapping.last_synced_at = datetime.utcnow()
             self.db.commit()
-            
-            # Log successful update
-            await self.log_action(
+
+            await self._log_action(
                 action="update_status",
-                source_tool=self.config.target_tool.tool_type,
+                source_tool=self._target_name,
                 source_item_id=event.item_id,
-                target_tool="jama",
+                target_tool=self._source_name,
                 target_item_id=str(mapping.jama_item_id),
                 result="success",
                 payload={
                     "webhook_event": event.to_dict(),
                     "target_item": target_item.to_dict(),
-                    "jama_fields": jama_fields
-                }
+                    "source_fields": source_fields,
+                },
             )
-            
-            logger.info(
-                f"Updated Jama item {mapping.jama_item_id} "
-                f"from target item {event.item_id}"
-            )
-            
+            logger.info("Updated source item %s from target item %s", mapping.jama_item_id, event.item_id)
+
         except Exception as e:
-            logger.error(
-                f"Failed to process target update for item {event.item_id}: {e}",
-                exc_info=True
-            )
-            # Log error
-            await self.log_action(
+            logger.error("Failed to process target update for item %s: %s", event.item_id, e, exc_info=True)
+            await self._log_action(
                 action="sync_error",
-                source_tool=self.config.target_tool.tool_type,
+                source_tool=self._target_name,
                 source_item_id=event.item_id,
-                target_tool="jama",
+                target_tool=self._source_name,
                 result="failed",
                 payload={"webhook_event": event.to_dict(), "error": str(e)},
-                error_detail=str(e)
+                error_detail=str(e),
             )
-    
+
+    # ── Conflict detection ────────────────────────────────────────────────────
+
     async def detect_conflict(
         self,
         mapping: SyncMapping,
-        jama_item: JamaItem,
-        target_item: TargetItem
+        source_item: TargetItem,
+        target_item: TargetItem,
     ) -> bool:
-        """
-        Detect if both sides modified since last sync.
-        
-        A conflict occurs when both Jama and the target tool have been
-        modified since the last successful sync.
-        
-        Args:
-            mapping: Sync mapping with last_synced_at timestamp
-            jama_item: Current Jama item state
-            target_item: Current target item state
-            
-        Returns:
-            True if conflict detected, False otherwise
-        """
-        jama_modified = jama_item.last_modified > mapping.last_synced_at
+        """Return True if both sides were modified since the last sync."""
+        source_modified = source_item.last_modified > mapping.last_synced_at
         target_modified = target_item.last_modified > mapping.last_synced_at
-        
-        conflict = jama_modified and target_modified
-        
+        conflict = source_modified and target_modified
         if conflict:
             logger.warning(
-                f"Conflict detected for Jama item {jama_item.id} / "
-                f"target item {target_item.item_id}: "
-                f"Jama modified at {jama_item.last_modified}, "
-                f"target modified at {target_item.last_modified}, "
-                f"last synced at {mapping.last_synced_at}"
+                "Conflict: source item %s (modified %s) and target item %s (modified %s) "
+                "both changed since last sync at %s",
+                source_item.item_id, source_item.last_modified,
+                target_item.item_id, target_item.last_modified,
+                mapping.last_synced_at,
             )
-        
         return conflict
-    
+
     async def handle_conflict(
         self,
         mapping: SyncMapping,
-        jama_item: JamaItem,
-        target_item: TargetItem
+        source_item: TargetItem,
+        target_item: TargetItem,
     ) -> None:
-        """
-        Flag conflict and log details without overwriting.
-        
-        When a conflict is detected, this method:
-        1. Sets mapping sync_status to "conflict"
-        2. Logs the conflict with both states in the payload
-        3. Does NOT overwrite either side
-        
-        Args:
-            mapping: Sync mapping to flag as conflict
-            jama_item: Current Jama item state
-            target_item: Current target item state
-        """
-        # Flag mapping as conflict
+        """Flag the mapping as 'conflict' and log both states. Does not overwrite either side."""
         mapping.sync_status = "conflict"
         self.db.commit()
-        
-        # Log conflict with both states
-        await self.log_action(
+        await self._log_action(
             action="sync_error",
             source_tool="both",
-            source_item_id=str(jama_item.id),
-            target_tool=self.config.target_tool.tool_type,
+            source_item_id=source_item.item_id,
+            target_tool=self._target_name,
             target_item_id=target_item.item_id,
             result="conflict",
             payload={
-                "jama_state": jama_item.to_dict(),
+                "source_state": source_item.to_dict(),
                 "target_state": target_item.to_dict(),
-                "last_synced_at": mapping.last_synced_at.isoformat()
+                "last_synced_at": mapping.last_synced_at.isoformat(),
             },
             error_detail=(
-                f"Both systems modified since last sync at {mapping.last_synced_at}. "
-                f"Jama modified at {jama_item.last_modified}, "
+                f"Both sides modified since last sync at {mapping.last_synced_at}. "
+                f"Source modified at {source_item.last_modified}, "
                 f"target modified at {target_item.last_modified}. "
                 f"Manual resolution required."
-            )
+            ),
         )
-        
         logger.error(
-            f"Conflict flagged for Jama item {jama_item.id} / "
-            f"target item {target_item.item_id}. Manual resolution required."
+            "Conflict flagged for source item %s / target item %s. Manual resolution required.",
+            source_item.item_id, target_item.item_id,
         )
-    
-    async def log_action(
+
+    # ── Audit log ─────────────────────────────────────────────────────────────
+
+    async def log_action(self, **kwargs) -> None:
+        """Public alias for backwards compatibility."""
+        await self._log_action(**kwargs)
+
+    async def _log_action(
         self,
         action: str,
         source_tool: str,
@@ -450,24 +326,9 @@ class SyncEngine:
         source_item_id: Optional[str] = None,
         target_tool: Optional[str] = None,
         target_item_id: Optional[str] = None,
-        error_detail: Optional[str] = None
+        error_detail: Optional[str] = None,
     ) -> None:
-        """
-        Create immutable audit log entry.
-        
-        All sync actions are logged to the ActionLog table for regulatory
-        compliance. Entries are immutable and include full payload data.
-        
-        Args:
-            action: Action type (create_ticket, update_status, link_items, sync_error)
-            source_tool: Source system name
-            result: Result status (success, failed, conflict)
-            payload: Full payload with before/after states
-            source_item_id: Source item ID (optional)
-            target_tool: Target system name (optional)
-            target_item_id: Target item ID (optional)
-            error_detail: Error details if result is failed or conflict (optional)
-        """
+        """Write an immutable audit log entry to the database."""
         try:
             log_entry = ActionLog(
                 timestamp=datetime.utcnow(),
@@ -478,20 +339,17 @@ class SyncEngine:
                 target_item_id=target_item_id,
                 payload=json.dumps(payload, default=str),
                 result=result,
-                error_detail=error_detail
+                error_detail=error_detail,
             )
-            
             self.db.add(log_entry)
             self.db.commit()
-            
-            logger.debug(
-                f"Logged action: {action} from {source_tool} "
-                f"with result {result}"
-            )
-            
+            logger.debug("Logged action '%s' from %s → result: %s", action, source_tool, result)
         except Exception as e:
-            logger.error(
-                f"Failed to log action {action}: {e}",
-                exc_info=True
-            )
-            # Don't raise - logging failure shouldn't break sync
+            # Logging failure must not break sync
+            logger.error("Failed to log action '%s': %s", action, e, exc_info=True)
+
+    # ── Backwards-compat alias ────────────────────────────────────────────────
+
+    async def process_jama_update(self, activity: Activity) -> None:
+        """Deprecated — use process_source_update."""
+        await self.process_source_update(activity)

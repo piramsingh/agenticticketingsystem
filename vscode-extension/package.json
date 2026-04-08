@@ -1,0 +1,82 @@
+{
+  "name": "ticket-agent",
+  "displayName": "Ticket Agent",
+  "description": "AI-powered ticket creation and sync from VS Code — supports Azure DevOps, Jira, and Jama",
+  "version": "0.2.0",
+  "publisher": "ticket-agent",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "jira",
+    "azure devops",
+    "tickets",
+    "ai",
+    "project management"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "ticketAgent.openPanel",
+        "title": "Ticket Agent: Open Chat Panel"
+      },
+      {
+        "command": "ticketAgent.createTicket",
+        "title": "Ticket Agent: Create Ticket from Selection"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "ticket-agent",
+          "title": "Ticket Agent",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "ticket-agent": [
+        {
+          "type": "webview",
+          "id": "ticketAgent.panel",
+          "name": "Chat"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Ticket Agent",
+      "properties": {
+        "ticketAgent.backendUrl": {
+          "type": "string",
+          "default": "http://localhost:8000",
+          "description": "URL of the Ticket Agent FastAPI backend"
+        },
+        "ticketAgent.anthropicApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Anthropic API key (only needed when using the extension without the backend)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "eslint": "^8.0.0"
+  },
+  "dependencies": {}
+}
