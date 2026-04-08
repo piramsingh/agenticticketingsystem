@@ -1,139 +1,219 @@
-# Jama Connect Agentic Sync Layer
+# Ticket Agent
 
-A Python-based bidirectional synchronization agent that connects Jama Connect (requirements management) with external ticket management tools like Azure DevOps, GitLab, or Jira.
+An AI-powered ticketing agent that creates and syncs work items across project management tools — from plain English.
 
-## Overview
+Supports **Azure DevOps**, **Jira**, and **Jama Connect** out of the box. Adding a new tool takes one file and one line of code.
 
-This sync agent automates the bridge between Jama Connect and development tools, eliminating manual ticket creation and status updates while maintaining a comprehensive audit trail for regulatory compliance (FDA 21 CFR Part 11).
+> **Live Azure project:** [dev.azure.com/piramsingh-demo/bio-rad demo](https://dev.azure.com/piramsingh-demo/bio-rad%20demo) — public, no login needed. Tickets you create will appear here in real time.
 
-### Key Features
+---
 
-- **Bidirectional Sync**: Automatically sync requirements from Jama to tickets in target tools and status updates back to Jama
-- **Conflict Detection**: Detects when both systems are modified between sync cycles and flags for manual resolution
-- **Audit Trail**: Immutable action log for regulatory compliance
-- **Extensible Connectors**: Abstract connector interface for easy addition of new target tools
-- **Rate Limiting**: Respects Jama API rate limits with exponential backoff
-- **REST API**: Management endpoints for monitoring and troubleshooting
+## What it does
+
+Type a plain English message → AI parses it → real work item gets created in your tool of choice.
+
+```
+"Create a high priority bug for Jamie — login page crashes on Safari"
+"Feature request for dark mode, assign to Sarah"
+"Task to update the docs #backend"
+```
+
+The agent understands:
+- **Priority** — "high priority", "critical", "urgent", "low"
+- **Type** — "bug", "feature", "task", "user story"
+- **Assignee** — "for Jamie", "assign to Sarah", "@alex"
+- **Labels** — "#backend", "#security", "#frontend"
+
+---
+
+## How it works
+
+```
+You type a message
+       ↓
+  LLM Parser (Claude)
+  extracts: title, assignee, priority, type, labels
+       ↓
+  Connector (Azure / Jira / Jama)
+  translates fields to the tool's native format
+       ↓
+  Work item created via REST API
+       ↓
+  Sync engine keeps both tools in sync automatically
+```
+
+---
 
 ## Architecture
 
-- **FastAPI** web server for webhook reception and management API
-- **APScheduler** for periodic polling of Jama activity stream
-- **SQLite** database for sync mappings and audit logs
-- **SQLAlchemy** ORM for database operations
-- **Pydantic** for configuration validation
+The system is built around three ideas:
 
-## Installation
+**1. Tool-agnostic connectors**
+Every tool (Azure DevOps, Jira, Jama) implements the same `BaseConnector` interface. The agent never knows which tool it's talking to.
+
+**2. YAML config templates**
+Point the agent at any tool by filling in a YAML file. No code changes needed.
+
+**3. Factory pattern**
+Adding a new tool = one new connector file + one `@register` line. Nothing else changes.
+
+---
+
+## Project structure
+
+```
+agenticticketingsystem/
+├── src/
+│   ├── connectors/              # One file per tool
+│   │   ├── base.py              # Abstract interface all connectors implement
+│   │   ├── azure_devops.py      # Azure DevOps REST API
+│   │   ├── jira.py              # Jira Cloud REST API v3
+│   │   ├── jama.py              # Jama Connect wrapper
+│   │   └── factory.py           # Builds the right connector from config
+│   ├── agent/
+│   │   ├── chat_agent.py        # Orchestrates parsing → ticket creation
+│   │   └── ticket_parser.py     # Claude-powered NLP parser
+│   ├── sync/
+│   │   ├── engine.py            # Bidirectional sync orchestration
+│   │   ├── poller.py            # Polls source connector for changes
+│   │   └── mapper.py            # Maps fields between tools
+│   ├── models/
+│   │   └── ticket.py            # Shared data models (tool-agnostic)
+│   ├── api/                     # FastAPI routes (chat, webhooks, health)
+│   ├── config.py                # Config schema + YAML loader
+│   └── main.py                  # App entry point
+├── templates/                   # Ready-to-use config templates
+│   ├── azure-only.yaml          # Azure DevOps standalone
+│   ├── jira-only.yaml           # Jira standalone
+│   └── jira-jama-sync.yaml      # Bidirectional Jira ↔ Jama sync
+├── mcp_server.py                # MCP server for Claude Code integration
+├── vscode-extension/            # VS Code sidebar extension
+├── run_tests.py                 # Full test suite
+└── webapp/                      # Browser-based chat UI
+```
+
+---
+
+## Quick start
 
 ### Prerequisites
+- Python 3.11+
+- An Azure DevOps, Jira, or Jama account
 
-- Python 3.11 or later
-- Jama Connect instance with API access
-- Target tool (Azure DevOps, GitLab, or Jira) with API access
-
-### Setup
-
-1. Clone the repository
-2. Install dependencies:
-   ```bash
-   pip install -e .
-   ```
-
-3. Copy the example configuration:
-   ```bash
-   cp config.example.yaml config.yaml
-   ```
-
-4. Edit `config.yaml` with your Jama and target tool credentials
-
-5. Set environment variables for sensitive credentials:
-   ```bash
-   export JAMA_PASSWORD="your-jama-password"
-   export ADO_PAT="your-azure-devops-pat"
-   ```
-
-## Configuration
-
-Edit `config.yaml` to configure:
-- Jama Connect connection settings
-- Target tool connection settings
-- Status mappings between systems
-- Field mappings
-- Polling interval
-- Sync direction (bidirectional, jama_to_target, or target_to_jama)
-
-See `config.example.yaml` for a complete example.
-
-## Running
-
-### Local Development
+### 1. Clone and set up
 
 ```bash
-uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
+git clone -b poc-demo https://github.com/piramsingh/agenticticketingsystem.git
+cd agenticticketingsystem
+python3 -m venv venv
+source venv/bin/activate
+pip install -e .
 ```
 
-### Docker
+### 2. Pick a config template
+
+Copy one of the templates from `templates/` to `config.yaml` in the project root and fill in your credentials:
+
+**Azure DevOps:**
+```bash
+cp templates/azure-only.yaml config.yaml
+export ADO_ORG=yourorg
+export ADO_PROJECT=yourproject
+export ADO_PAT=yourtoken
+```
+
+**Jira:**
+```bash
+cp templates/jira-only.yaml config.yaml
+export JIRA_DOMAIN=yourcompany
+export JIRA_PROJECT_KEY=PROJ
+export JIRA_EMAIL=you@company.com
+export JIRA_API_TOKEN=yourtoken
+```
+
+### 3. Start the backend
 
 ```bash
-docker build -t jama-sync-agent .
-docker run -p 8000:8000 \
-  -v $(pwd)/config.yaml:/app/config.yaml \
-  -v $(pwd)/data:/app/data \
-  -e JAMA_PASSWORD="${JAMA_PASSWORD}" \
-  -e ADO_PAT="${ADO_PAT}" \
-  jama-sync-agent
+python demo/run_webapp_demo.py
 ```
 
-### Docker Compose
+### 4. Open the web UI
 
 ```bash
-docker-compose up
+cd webapp && python -m http.server 8080
 ```
 
-## API Endpoints
+Go to **http://localhost:8080**
 
-- `GET /health` - Health check with sync status
-- `GET /mappings` - List all sync mappings (paginated)
-- `GET /mappings/{jama_item_id}` - Get specific mapping
-- `GET /logs` - Query audit logs with filters
-- `POST /webhooks/{tool_name}` - Receive webhooks from target tools
-- `POST /sync/trigger` - Manually trigger a sync cycle
+---
 
-## Testing
+## Claude Code integration (MCP)
 
-Run tests with:
+Add this to your Claude Code MCP settings:
+
+```json
+{
+  "mcpServers": {
+    "ticket-agent": {
+      "command": "python",
+      "args": ["mcp_server.py"],
+      "cwd": "/path/to/agenticticketingsystem"
+    }
+  }
+}
+```
+
+Then inside Claude Code you can say:
+- *"Create a high priority bug for the login issue"*
+- *"List my recent tickets"*
+- *"Who's on the team?"*
+
+---
+
+## VS Code Extension
+
 ```bash
-pytest
+cd vscode-extension
+npm install
+npm run compile
 ```
 
-With coverage:
+Press `F5` in VS Code to launch the extension. A chat sidebar appears in the activity bar.
+
+---
+
+## Running tests
+
 ```bash
-pytest --cov=src --cov-report=html
+export AZURE_ORG_URL="https://dev.azure.com/yourorg"
+export AZURE_PAT="yourtoken"
+export AZURE_PROJECT="yourproject"
+python run_tests.py
 ```
 
-## Project Structure
+---
 
-```
-jama-sync-agent/
-├── src/
-│   ├── main.py              # FastAPI app and scheduler
-│   ├── config.py            # Configuration management
-│   ├── database.py          # Database setup
-│   ├── models/              # SQLAlchemy models
-│   ├── clients/             # API clients
-│   │   ├── jama_client.py
-│   │   └── connectors/      # Target tool connectors
-│   ├── sync/                # Sync engine
-│   │   ├── poller.py
-│   │   ├── mapper.py
-│   │   └── engine.py
-│   └── api/                 # API endpoints
-├── tests/                   # Test suite
-├── config.example.yaml      # Example configuration
-├── pyproject.toml          # Project dependencies
-└── Dockerfile              # Container definition
+## Adding a new tool
+
+1. Create `src/connectors/mytool.py` implementing `BaseConnector`
+2. Register it in `src/connectors/factory.py`:
+
+```python
+@register("mytool")
+def _build_mytool(cfg):
+    return MyToolConnector(cfg.base_url, cfg.auth.token.get_secret_value(), cfg.project)
 ```
 
-## License
+That's it. The rest of the app picks it up automatically.
 
-MIT
+---
+
+## Troubleshooting
+
+**"Unknown tool_type"** — Check that `tool_type` in your config matches one of: `azure_devops`, `jira`, `jama`
+
+**"Environment variable not set"** — Make sure you've exported all the `${VAR}` placeholders your config template references
+
+**"Connection validation failed"** — Double-check your API token has read/write access to work items
+
+**Assignee shows as Unassigned** — The name you used wasn't found in the project's member list. Run `list_members` via MCP to see valid names

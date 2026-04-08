@@ -1,0 +1,35 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Template: Jira Cloud only
+# Use this when your team is on Jira and you want the AI chat agent + MCP.
+#
+# Required env vars:
+#   JIRA_DOMAIN        — your Atlassian domain (e.g. "mycompany" for mycompany.atlassian.net)
+#   JIRA_PROJECT_KEY   — Jira project key (e.g. "PROJ")
+#   JIRA_EMAIL         — your Atlassian account email
+#   JIRA_API_TOKEN     — API token from id.atlassian.com/manage-profile/security/api-tokens
+# ──────────────────────────────────────────────────────────────────────────────
+
+connectors:
+  - name: jira-main
+    tool_type: jira
+    base_url: "https://${JIRA_DOMAIN}.atlassian.net"
+    project: "${JIRA_PROJECT_KEY}"
+    auth:
+      type: api_token
+      email: "${JIRA_EMAIL}"
+      token: "${JIRA_API_TOKEN}"
+
+# When source == target, the poller is a no-op (no sync runs)
+sync:
+  source: jira-main
+  target: jira-main
+  polling_interval: 300
+  direction: source_to_target
+
+status_mappings: []
+
+field_mappings:
+  name: summary
+  description: description
+  priority: priority
+  status: status
