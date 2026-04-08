@@ -111,10 +111,10 @@ class TicketParser:
         """Extract assignee name from text"""
         # Pattern: "assigned to X", "for X to", "assign X"
         patterns = [
+            r"@(\w+)",                                              # @mention (highest priority)
             r"assigned?\s+to\s+(\w+)",
             r"for\s+(\w+)\s+to",
-            r"assign\s+(\w+)",
-            r"@(\w+)",
+            r"assign\s+(\w{2,})",                                   # "assign X" — skip single chars like "a"
             r"(\w+)\s+needs\s+a?\s*(?:ticket|task|bug|issue|fix)",
             r"(\w+)\s+should\s+(?:fix|handle|work\s+on|do)\s+",
         ]
@@ -156,6 +156,9 @@ class TicketParser:
             flags=re.IGNORECASE
         )
         
+        # Remove @mentions (e.g. @piram, @behniwalp36@gmail.com)
+        cleaned = re.sub(r"@\S+", "", cleaned, flags=re.IGNORECASE)
+
         # Remove assignee mentions
         cleaned = re.sub(r"(assigned?\s+to|for)\s+\w+\s+(to\s+)?", "", cleaned, flags=re.IGNORECASE)
         
@@ -201,55 +204,65 @@ class TicketParser:
 
 class LLMTicketParser(TicketParser):
     """
-    Enhanced parser using LLM for better natural language understanding.
-    
-    This would use OpenAI, Anthropic, or other LLM APIs in production.
-    For demo purposes, falls back to pattern matching.
+    Enhanced parser using Claude (Anthropic) for natural language understanding.
+    Falls back to regex pattern matching when no API key is available.
     """
-    
+
+    _SYSTEM_PROMPT = """\
+You extract structured ticket information from natural language requests.
+
+Respond with a single JSON object — no markdown, no explanation — using these exact keys:
+{
+  "title":       "<concise action title, ≤80 chars>",
+  "description": "<fuller description or same as title if nothing extra>",
+  "assignee":    "<first or full name, or null>",
+  "priority":    "<Critical|High|Medium|Low>",
+  "ticket_type": "<Bug|Feature|Task|User Story>",
+  "labels":      ["<label>", ...]
+}
+
+Rules:
+- title must be an actionable phrase, not the raw user sentence
+- priority defaults to Medium when not mentioned
+- ticket_type defaults to Task when not clear
+- labels: include tech area keywords (security, backend, frontend, database, mobile, api, auth) if mentioned; also include any #hashtags
+- assignee: null if no person is mentioned
+"""
+
     def __init__(self, api_key: Optional[str] = None):
-        """
-        Initialize LLM parser.
-        
-        Args:
-            api_key: API key for LLM service (OpenAI, Anthropic, etc.)
-        """
         super().__init__()
         self.api_key = api_key
-        self.use_llm = api_key is not None
-    
+        self._client = None
+        if api_key:
+            try:
+                import anthropic
+                self._client = anthropic.Anthropic(api_key=api_key)
+            except ImportError:
+                pass  # falls back to regex
+
     def parse(self, user_input: str) -> ParsedTicket:
-        """
-        Parse using LLM if available, otherwise fall back to pattern matching.
-        
-        Args:
-            user_input: Natural language description
-            
-        Returns:
-            ParsedTicket with extracted information
-        """
-        if self.use_llm:
-            return self._parse_with_llm(user_input)
-        else:
-            # Fall back to pattern matching
-            return super().parse(user_input)
-    
-    def _parse_with_llm(self, user_input: str) -> ParsedTicket:
-        """
-        Parse using LLM API.
-        
-        This is a placeholder for actual LLM integration.
-        In production, you would call OpenAI/Anthropic API here.
-        """
-        # TODO: Implement actual LLM API call
-        # Example with OpenAI:
-        # response = openai.ChatCompletion.create(
-        #     model="gpt-4",
-        #     messages=[
-        #         {"role": "system", "content": "Extract ticket information from user input..."},
-        #         {"role": "user", "content": user_input}
-        #     ]
-        # )
-        
-        # For now, fall back to pattern matching
+        if self._client:
+            try:
+                return self._parse_with_claude(user_input)
+            except Exception:
+                pass  # fall through to regex on any error
         return super().parse(user_input)
+
+    def _parse_with_claude(self, user_input: str) -> ParsedTicket:
+        import anthropic
+        message = self._client.messages.create(
+            model="claude-opus-4-6",
+            max_tokens=512,
+            system=self._SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_input}],
+        )
+        raw = message.content[0].text.strip()
+        data: Dict[str, Any] = json.loads(raw)
+        return ParsedTicket(
+            title=data.get("title", user_input[:80]),
+            description=data.get("description", user_input),
+            assignee=data.get("assignee") or None,
+            priority=data.get("priority", "Medium"),
+            ticket_type=data.get("ticket_type", "Task"),
+            labels=data.get("labels", []),
+        )

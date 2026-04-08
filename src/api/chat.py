@@ -76,6 +76,18 @@ async def chat(request: ChatRequest) -> ChatResponse:
         )
 
 
+@router.get("/members")
+async def get_members():
+    """Return project members for @mention autocomplete."""
+    if not _chat_agent:
+        return {"members": []}
+    try:
+        members = await _chat_agent.connector.list_members()
+        return {"members": members}
+    except Exception:
+        return {"members": []}
+
+
 @router.get("/help")
 async def get_help() -> Dict[str, str]:
     """
