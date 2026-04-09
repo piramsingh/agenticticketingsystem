@@ -5,6 +5,7 @@ Run from the project root:
     export AZURE_ORG_URL="https://dev.azure.com/piramsingh-demo"
     export AZURE_PAT="your-token"
     export AZURE_PROJECT="bio-rad demo"
+    export JIRA_TOKEN="your-jira-api-token"
     python run_tests.py
 """
 import asyncio
@@ -120,6 +121,47 @@ async def test_5():
         log(5, "MCP server lists tools", False, str(e))
 
 
+# ── Test 6: Jira connector works ──────────────────────────────────────────────
+async def test_6():
+    token = os.getenv("JIRA_TOKEN")
+    if not token:
+        log(6, "Jira connector works", False, "Missing env var: JIRA_TOKEN — skipping")
+        return
+
+    from src.connectors.jira import JiraConnector
+    connector = JiraConnector(
+        base_url="https://piramsingh.atlassian.net",
+        email="piramsingh@gmail.com",
+        api_token=token,
+        project="SCRUM",
+    )
+    try:
+        ok = await connector.validate_connection()
+        if not ok:
+            log(6, "Jira connector works", False, "Connection validation failed")
+            return
+
+        # Create a test ticket
+        from src.config import ConnectorConfig, ApiTokenAuth
+        result = await connector.create_item({
+            "title": "Test ticket from ticket-agent",
+            "description": "Automated test — safe to delete.",
+            "priority": connector.normalize_priority("medium"),
+            "type": connector.normalize_type("task"),
+        })
+        log(6, "Jira connector works", True,
+            f"Created issue {result.item_id} → {result.item_url}")
+
+        # List tickets
+        tickets = await connector.list_items(3)
+        print(f"       Listed {len(tickets)} recent tickets from SCRUM")
+
+    except Exception as e:
+        log(6, "Jira connector works", False, str(e))
+    finally:
+        await connector.close()
+
+
 # ── Runner ─────────────────────────────────────────────────────────────────────
 async def main():
     print("=" * 50)
@@ -131,6 +173,7 @@ async def main():
     await test_3()
     test_4()
     await test_5()
+    await test_6()
 
     print("=" * 50)
     passed = sum(1 for _, _, p in results if p)

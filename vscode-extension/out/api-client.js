@@ -1,8 +1,6 @@
 "use strict";
 /**
  * Thin HTTP client that calls the Ticket Agent FastAPI backend.
- * All network calls are centralised here so the rest of the extension
- * never has to think about fetch / error handling.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ApiClient = void 0;
@@ -20,7 +18,8 @@ class ApiClient {
         return this._get(`/tickets?limit=${limit}`);
     }
     async listMembers() {
-        return this._get('/members');
+        const data = await this._get('/chat/members');
+        return data.members ?? [];
     }
     async healthCheck() {
         try {

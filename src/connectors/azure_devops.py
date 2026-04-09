@@ -31,11 +31,12 @@ class AzureDevOpsConnector(BaseConnector):
     }
 
     # Canonical ticket type → Azure DevOps work item type
+    # Mapped to Basic process template types: Issue, Epic, Task
     _TYPE_MAP: Dict[str, str] = {
-        "bug":        "Bug",
+        "bug":        "Issue",
         "feature":    "Epic",
         "task":       "Task",
-        "user story": "User Story",
+        "user story": "Task",
     }
 
     def __init__(self, base_url: str, pat: str, project: str,

@@ -14,7 +14,7 @@ from .connectors.factory import build as build_connector
 from .sync.engine import SyncEngine
 from .sync.mapper import FieldMapper
 from .sync.poller import ConnectorPoller
-from .api import webhooks, health, mappings, logs, chat
+from .api import webhooks, health, mappings, logs, chat, tickets, status
 from .agent.chat_agent import ChatAgent
 from .agent.ticket_parser import TicketParser
 
@@ -85,6 +85,12 @@ async def lifespan(app: FastAPI):
         webhooks.set_dependencies(sync_engine, target_connector)
         health.set_poller(poller)
         chat.set_chat_agent(chat_agent)
+        tickets.set_connector(target_connector)
+        status.set_connector(
+            target_connector,
+            connector_type=config.get_target_config().tool_type,
+            project=config.get_target_config().project,
+        )
 
         # Scheduler
         scheduler = AsyncIOScheduler()
@@ -154,9 +160,11 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 app.include_router(webhooks.router)
 app.include_router(health.router)
+app.include_router(status.router)
 app.include_router(mappings.router)
 app.include_router(logs.router)
 app.include_router(chat.router)
+app.include_router(tickets.router)
 
 
 @app.get("/")

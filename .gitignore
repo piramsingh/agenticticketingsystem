@@ -44,8 +44,9 @@ htmlcov/
 *.sqlite3
 data/
 
-# Configuration
+# Configuration (may contain secrets)
 config.yaml
+mcp_config.json
 
 # Logs
 *.log

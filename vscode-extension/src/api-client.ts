@@ -1,7 +1,5 @@
 /**
  * Thin HTTP client that calls the Ticket Agent FastAPI backend.
- * All network calls are centralised here so the rest of the extension
- * never has to think about fetch / error handling.
  */
 
 export interface CreateTicketResponse {
@@ -41,7 +39,8 @@ export class ApiClient {
   }
 
   async listMembers(): Promise<Member[]> {
-    return this._get<Member[]>('/members');
+    const data = await this._get<{ members: Member[] }>('/chat/members');
+    return data.members ?? [];
   }
 
   async healthCheck(): Promise<boolean> {

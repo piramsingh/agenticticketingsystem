@@ -51,14 +51,15 @@ class JiraConnector(BaseConnector):
         self.project = project
 
         credentials = base64.b64encode(f"{email}:{api_token}".encode()).decode()
+        self._api = f"{self.base_url}/rest/api/3"
         self.client = httpx.AsyncClient(
-            base_url=f"{self.base_url}/rest/api/3",
             headers={
                 "Authorization": f"Basic {credentials}",
                 "Accept":        "application/json",
                 "Content-Type":  "application/json",
             },
             timeout=30.0,
+            follow_redirects=False,
         )
 
     # ── Field normalisation ───────────────────────────────────────────────────
@@ -117,7 +118,16 @@ class JiraConnector(BaseConnector):
 
         for attempt, delay in enumerate([1, 2, 4]):
             try:
-                resp = await self.client.post("/issue", json=body)
+                resp = await self.client.post(f"{self._api}/issue", json=body)
+                if resp.status_code == 400:
+                    logger.error("Jira 400 — request body: %s", body)
+                    logger.error("Jira 400 — response body: %s", resp.text)
+                    if "priority" in body.get("fields", {}):
+                        logger.warning("Retrying without priority field")
+                        body["fields"].pop("priority", None)
+                        resp = await self.client.post(f"{self._api}/issue", json=body)
+                        if resp.status_code == 400:
+                            logger.error("Still 400 after removing priority — response: %s", resp.text)
                 resp.raise_for_status()
                 data = resp.json()
                 issue_key = data["key"]
@@ -131,8 +141,6 @@ class JiraConnector(BaseConnector):
                     await asyncio.sleep(delay)
                     continue
                 logger.error("Failed to create Jira issue: %s", e, exc_info=True)
-                if hasattr(e, "response") and e.response is not None:
-                    logger.error("Response body: %s", e.response.text)
                 raise
 
     async def update_item(self, item_id: str, fields: Dict[str, Any]) -> None:
@@ -164,7 +172,7 @@ class JiraConnector(BaseConnector):
 
         for attempt, delay in enumerate([1, 2, 4]):
             try:
-                resp = await self.client.put(f"/issue/{item_id}", json=update_body)
+                resp = await self.client.put(f"{self._api}/issue/{item_id}", json=update_body)
                 resp.raise_for_status()
                 logger.info("Updated Jira issue %s", item_id)
                 return
@@ -179,7 +187,7 @@ class JiraConnector(BaseConnector):
         """Retrieve a Jira issue by key or ID."""
         for attempt, delay in enumerate([1, 2, 4]):
             try:
-                resp = await self.client.get(f"/issue/{item_id}")
+                resp = await self.client.get(f"{self._api}/issue/{item_id}")
                 resp.raise_for_status()
                 data = resp.json()
                 f = data.get("fields", {})
@@ -276,7 +284,7 @@ class JiraConnector(BaseConnector):
     async def validate_connection(self) -> bool:
         """Verify credentials by fetching the project."""
         try:
-            resp = await self.client.get(f"/project/{self.project}")
+            resp = await self.client.get(f"{self._api}/project/{self.project}")
             resp.raise_for_status()
             logger.info("Jira connection validated for project %s", self.project)
             return True
@@ -292,7 +300,7 @@ class JiraConnector(BaseConnector):
         jql = f"project = {self.project} ORDER BY updated DESC"
         try:
             resp = await self.client.get(
-                "/search",
+                f"{self._api}/search",
                 params={"jql": jql, "maxResults": limit,
                         "fields": "summary,status,priority,assignee"},
             )
@@ -319,7 +327,7 @@ class JiraConnector(BaseConnector):
         """Return all users with access to the project."""
         try:
             resp = await self.client.get(
-                "/user/assignable/search",
+                f"{self._api}/user/assignable/search",
                 params={"project": self.project, "maxResults": 200},
             )
             resp.raise_for_status()
@@ -335,7 +343,7 @@ class JiraConnector(BaseConnector):
     async def resolve_user(self, name: str) -> Optional[str]:
         """Search for a Jira user by name, return their accountId."""
         try:
-            resp = await self.client.get("/user/search", params={"query": name})
+            resp = await self.client.get(f"{self._api}/user/search", params={"query": name})
             resp.raise_for_status()
             for user in resp.json():
                 if name.lower() in user.get("displayName", "").lower():
@@ -361,7 +369,7 @@ class JiraConnector(BaseConnector):
         /issue/{key}/transitions with the matching transition ID.
         """
         try:
-            resp = await self.client.get(f"/issue/{issue_key}/transitions")
+            resp = await self.client.get(f"{self._api}/issue/{issue_key}/transitions")
             resp.raise_for_status()
             transitions = resp.json().get("transitions", [])
             match = next(
@@ -375,7 +383,7 @@ class JiraConnector(BaseConnector):
                 )
                 return
             transition_resp = await self.client.post(
-                f"/issue/{issue_key}/transitions",
+                f"{self._api}/issue/{issue_key}/transitions",
                 json={"transition": {"id": match["id"]}},
             )
             transition_resp.raise_for_status()

@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "bio-rad-ticketing": {
+      "command": "/Users/piramsingh/DEV/bio rad project /agenticticketingsystem/venv/bin/python",
+      "args": [
+        "/Users/piramsingh/DEV/bio rad project /agenticticketingsystem/mcp_server.py"
+      ],
+      "env": {
+        "AZURE_ORG_URL": "https://dev.azure.com/piramsingh-demo",
+        "AZURE_PROJECT": "bio-rad demo",
+        "AZURE_PAT": "${AZURE_PAT}",
+        "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}"
+      }
+    }
+  }
+}
