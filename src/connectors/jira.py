@@ -49,9 +49,12 @@ class JiraConnector(BaseConnector):
         self.base_url = base_url.rstrip("/")
         self.email = email
         self.project = project
+        self._valid_issue_types: Optional[List[str]] = None  # fetched lazily
+        self._active_sprint_id: Optional[int] = None         # fetched lazily
 
         credentials = base64.b64encode(f"{email}:{api_token}".encode()).decode()
-        self._api = f"{self.base_url}/rest/api/3"
+        self._api     = f"{self.base_url}/rest/api/3"
+        self._agile   = f"{self.base_url}/rest/agile/1.0"
         self.client = httpx.AsyncClient(
             headers={
                 "Authorization": f"Basic {credentials}",
@@ -80,13 +83,12 @@ class JiraConnector(BaseConnector):
         """
         Convert canonical ticket type → Jira issue type name.
 
-        Args:
-            canonical: "Bug" | "Feature" | "Task" | "User Story"
-
-        Returns:
-            Jira issue type string. Defaults to "Task".
+        Pass-through for inputs that aren't in the canonical map — this lets
+        the parser's smart picks (e.g. "Epic", "Subtask") survive. The
+        connector's _resolve_issue_type validates against real valid types
+        before sending the request to Jira.
         """
-        return self._TYPE_MAP.get(canonical.lower(), "Task")
+        return self._TYPE_MAP.get(canonical.lower(), canonical)
 
     # ── CRUD ──────────────────────────────────────────────────────────────────
 
@@ -94,6 +96,8 @@ class JiraConnector(BaseConnector):
         """Create a Jira issue via POST /issue."""
         issue_type = fields.pop("type", "Task")
         priority = fields.get("priority", {"name": "Medium"})
+
+        issue_type = await self._resolve_issue_type(issue_type)
 
         body: Dict[str, Any] = {
             "fields": {
@@ -114,7 +118,7 @@ class JiraConnector(BaseConnector):
         if "tags" in fields and fields["tags"]:
             body["fields"]["labels"] = [t.strip() for t in str(fields["tags"]).split(",") if t.strip()]
 
-        logger.info("Creating Jira issue in project %s", self.project)
+        logger.info("Creating Jira issue in project %s (type=%s)", self.project, issue_type)
 
         for attempt, delay in enumerate([1, 2, 4]):
             try:
@@ -134,10 +138,24 @@ class JiraConnector(BaseConnector):
                 issue_url = f"{self.base_url}/browse/{issue_key}"
                 created_at = datetime.utcnow()
                 logger.info("Created Jira issue %s", issue_key)
+
+                # Move into the active sprint (best-effort — if it fails the
+                # issue still exists in the backlog and we log the reason)
+                sprint_id = await self._get_active_sprint_id()
+                if sprint_id:
+                    await self._assign_to_sprint(issue_key, sprint_id)
+
                 return CreateItemResult(item_id=issue_key, item_url=issue_url, created_at=created_at)
-            except httpx.HTTPError as e:
+            except httpx.HTTPStatusError as e:
                 if self._is_transient(e) and attempt < 2:
                     logger.warning("Transient error, retrying in %ds: %s", delay, e)
+                    await asyncio.sleep(delay)
+                    continue
+                jira_detail = e.response.text if e.response is not None else ""
+                logger.error("Failed to create Jira issue: %s — %s", e, jira_detail)
+                raise RuntimeError(f"Jira rejected the request: {jira_detail}") from e
+            except httpx.HTTPError as e:
+                if self._is_transient(e) and attempt < 2:
                     await asyncio.sleep(delay)
                     continue
                 logger.error("Failed to create Jira issue: %s", e, exc_info=True)
@@ -281,12 +299,118 @@ class JiraConnector(BaseConnector):
 
     # ── Connectivity ──────────────────────────────────────────────────────────
 
-    async def validate_connection(self) -> bool:
-        """Verify credentials by fetching the project."""
+    async def _fetch_issue_types(self) -> List[str]:
+        """Fetch valid issue type names for this project via createmeta."""
+        if self._valid_issue_types is not None:
+            return self._valid_issue_types
         try:
-            resp = await self.client.get(f"{self._api}/project/{self.project}")
+            resp = await self.client.get(
+                f"{self._api}/issue/createmeta",
+                params={"projectKeys": self.project, "expand": "projects.issuetypes"},
+            )
             resp.raise_for_status()
-            logger.info("Jira connection validated for project %s", self.project)
+            projects = resp.json().get("projects", [])
+            if projects:
+                names = [it["name"] for it in projects[0].get("issuetypes", [])]
+                self._valid_issue_types = names
+                logger.info("Valid issue types for %s: %s", self.project, names)
+                return names
+        except httpx.HTTPError as e:
+            logger.warning("Could not fetch issue types: %s", e)
+        return []
+
+    async def _resolve_issue_type(self, requested: str) -> str:
+        """Return *requested* if valid for this project, else the best available fallback."""
+        valid = await self._fetch_issue_types()
+        if not valid or requested in valid:
+            return requested
+        # prefer Task → Story → first available
+        for fallback in ("Task", "Story", valid[0]):
+            if fallback in valid:
+                logger.warning(
+                    "Issue type '%s' not in project %s %s — using '%s'",
+                    requested, self.project, valid, fallback,
+                )
+                return fallback
+        return requested
+
+    async def _assign_to_sprint(self, issue_key: str, sprint_id: int) -> bool:
+        """Move an existing issue into the given sprint via the Agile API."""
+        try:
+            resp = await self.client.post(
+                f"{self._agile}/sprint/{sprint_id}/issue",
+                json={"issues": [issue_key]},
+            )
+            resp.raise_for_status()
+            logger.info("Moved %s into sprint %d", issue_key, sprint_id)
+            return True
+        except httpx.HTTPError as e:
+            body = getattr(e, "response", None)
+            detail = body.text if body is not None else str(e)
+            logger.warning("Could not move %s into sprint %d: %s", issue_key, sprint_id, detail)
+            return False
+
+    async def _get_active_sprint_id(self) -> Optional[int]:
+        """Return the ID of the active sprint for this project, cached after first fetch."""
+        if self._active_sprint_id is not None:
+            return self._active_sprint_id
+        try:
+            # Find any board for this project (no type filter — team-managed boards
+            # are type 'simple', company-managed are 'scrum'; we want either)
+            boards_resp = await self.client.get(
+                f"{self._agile}/board",
+                params={"projectKeyOrId": self.project},
+            )
+            boards_resp.raise_for_status()
+            boards = boards_resp.json().get("values", [])
+            if not boards:
+                logger.warning("No board found for project %s", self.project)
+                return None
+
+            # Try each board until we find an active sprint
+            for board in boards:
+                board_id = board["id"]
+                board_type = board.get("type", "?")
+                try:
+                    sprints_resp = await self.client.get(
+                        f"{self._agile}/board/{board_id}/sprint",
+                        params={"state": "active"},
+                    )
+                    sprints_resp.raise_for_status()
+                    sprints = sprints_resp.json().get("values", [])
+                    if sprints:
+                        sprint_id = sprints[0]["id"]
+                        sprint_name = sprints[0].get("name", sprint_id)
+                        logger.info(
+                            "Active sprint for %s: %s (id=%d, board=%d type=%s)",
+                            self.project, sprint_name, sprint_id, board_id, board_type,
+                        )
+                        self._active_sprint_id = sprint_id
+                        return sprint_id
+                except httpx.HTTPError as e:
+                    logger.debug("Board %d sprint fetch failed: %s", board_id, e)
+                    continue
+
+            logger.warning("No active sprint found across %d boards for %s", len(boards), self.project)
+            return None
+        except httpx.HTTPError as e:
+            logger.warning("Could not fetch active sprint: %s", e)
+            return None
+
+    async def get_valid_types(self) -> List[str]:
+        return await self._fetch_issue_types()
+
+    async def validate_connection(self) -> bool:
+        """Verify credentials and warm up the issue-type cache."""
+        try:
+            types = await self._fetch_issue_types()
+            if types:
+                logger.info("Jira connection validated for project %s", self.project)
+                return True
+            # createmeta returned no types — fall back to a lightweight user check
+            resp = await self.client.get(f"{self._api}/myself")
+            resp.raise_for_status()
+            logger.info("Jira connection validated (myself endpoint) for project %s", self.project)
             return True
         except httpx.HTTPError as e:
             logger.error("Jira connection validation failed: %s", e)
@@ -299,10 +423,10 @@ class JiraConnector(BaseConnector):
         limit = min(limit, 50)
         jql = f"project = {self.project} ORDER BY updated DESC"
         try:
-            resp = await self.client.get(
-                f"{self._api}/search",
-                params={"jql": jql, "maxResults": limit,
-                        "fields": "summary,status,priority,assignee"},
+            resp = await self.client.post(
+                f"{self._api}/search/jql",
+                json={"jql": jql, "maxResults": limit,
+                      "fields": ["summary", "status", "priority", "assignee"]},
             )
             resp.raise_for_status()
             results = []

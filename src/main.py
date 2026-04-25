@@ -16,7 +16,7 @@ from .sync.mapper import FieldMapper
 from .sync.poller import ConnectorPoller
 from .api import webhooks, health, mappings, logs, chat, tickets, status
 from .agent.chat_agent import ChatAgent
-from .agent.ticket_parser import TicketParser
+from .agent.ticket_parser import LLMTicketParser
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -78,7 +78,7 @@ async def lifespan(app: FastAPI):
         poller = ConnectorPoller(source_connector, sync_engine)
 
         # Chat agent talks to the target connector
-        parser = TicketParser()
+        parser = LLMTicketParser(api_key=os.getenv("OPENROUTER_API_KEY"))
         chat_agent = ChatAgent(parser=parser, connector=target_connector)
 
         # Wire up API dependencies

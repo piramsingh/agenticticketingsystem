@@ -40,8 +40,9 @@ class ChatAgent:
         """
         try:
             logger.info("Processing message: %s", user_input)
-            parsed = self.parser.parse(user_input)
-            logger.info("Parsed ticket: %s", parsed)
+            valid_types = await self.connector.get_valid_types()
+            parsed = self.parser.parse(user_input, valid_types=valid_types)
+            logger.info("Parsed ticket (valid_types=%s): %s", valid_types, parsed)
 
             result = await self._create_target_ticket(parsed)
             logger.info("Created ticket: %s", result.item_id)

@@ -95,3 +95,13 @@ def _build_jama(cfg: ConnectorConfig) -> BaseConnector:
         password=cfg.auth.password.get_secret_value(), # type: ignore[union-attr]
         project_id=project_id,
     )
+
+
+@register("github_issues")
+def _build_github(cfg: ConnectorConfig) -> BaseConnector:
+    from .github_issues import GitHubIssuesConnector
+    return GitHubIssuesConnector(
+        base_url=cfg.base_url,
+        token=cfg.auth.token.get_secret_value(),    # type: ignore[union-attr]
+        project=cfg.project,
+    )

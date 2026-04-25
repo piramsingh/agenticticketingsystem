@@ -262,6 +262,19 @@ class AzureDevOpsConnector(BaseConnector):
             logger.error("Azure DevOps connection failed: %s", e)
             return False
 
+    async def get_valid_types(self) -> List[str]:
+        """Return work item type names available in this project."""
+        try:
+            resp = await self.client.get(
+                f"{self.base_url}/{self.project}/_apis/wit/workitemtypes",
+                params={"api-version": self.api_version},
+            )
+            resp.raise_for_status()
+            return [t["name"] for t in resp.json().get("value", [])]
+        except httpx.HTTPError as e:
+            logger.warning("Could not fetch Azure work item types: %s", e)
+            return []
+
     # ── Listing ───────────────────────────────────────────────────────────────
 
     async def list_items(self, limit: int = 10) -> List[dict]:

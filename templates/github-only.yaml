@@ -1,0 +1,39 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Template: GitHub Issues only
+# Use this when your team uses GitHub Issues as the work tracker.
+#
+# Required env vars:
+#   GITHUB_REPO        — "owner/repo" (e.g. "piramsingh/agenticticketingsystem")
+#   GITHUB_TOKEN       — Personal Access Token with `repo` scope
+#                        Create at https://github.com/settings/tokens
+#
+# Notes:
+# - GitHub doesn't have an "issue type" concept — type and priority are mapped
+#   to labels (e.g. "bug", "enhancement", "priority:high"). For best results,
+#   pre-create those labels on your repo.
+# - GitHub has no "sprint" concept either; tickets just go on the issues list.
+#   Milestones could serve a similar role; not implemented yet.
+# ──────────────────────────────────────────────────────────────────────────────
+
+connectors:
+  - name: github-main
+    tool_type: github_issues
+    base_url: "https://api.github.com"
+    project: "${GITHUB_REPO}"
+    auth:
+      type: pat
+      token: "${GITHUB_TOKEN}"
+
+# When source == target, the poller is a no-op (no sync runs)
+sync:
+  source: github-main
+  target: github-main
+  polling_interval: 300
+  direction: source_to_target
+
+status_mappings: []
+
+field_mappings:
+  name: title
+  description: body
+  status: state

@@ -6,6 +6,8 @@ Run from the project root:
     export AZURE_PAT="your-token"
     export AZURE_PROJECT="bio-rad demo"
     export JIRA_TOKEN="your-jira-api-token"
+    export GITHUB_TOKEN="ghp_..."           # PAT with `repo` scope
+    export GITHUB_REPO="owner/repo"          # e.g. piramsingh/agenticticketingsystem
     python run_tests.py
 """
 import asyncio
@@ -162,6 +164,46 @@ async def test_6():
         await connector.close()
 
 
+# ── Test 7: GitHub Issues connector works ─────────────────────────────────────
+async def test_7():
+    token = os.getenv("GITHUB_TOKEN")
+    repo  = os.getenv("GITHUB_REPO")
+    if not token or not repo:
+        missing = [v for v in ("GITHUB_TOKEN", "GITHUB_REPO") if not os.getenv(v)]
+        log(7, "GitHub Issues connector works", False,
+            f"Missing env vars: {', '.join(missing)} — skipping")
+        return
+
+    from src.connectors.github_issues import GitHubIssuesConnector
+    connector = GitHubIssuesConnector(
+        base_url="https://api.github.com",
+        token=token,
+        project=repo,
+    )
+    try:
+        ok = await connector.validate_connection()
+        if not ok:
+            log(7, "GitHub Issues connector works", False, "Connection validation failed")
+            return
+
+        result = await connector.create_item({
+            "title": "Test issue from ticket-agent",
+            "description": "Automated test — safe to close.",
+            "priority": connector.normalize_priority("low"),
+            "type": connector.normalize_type("task"),
+        })
+        log(7, "GitHub Issues connector works", True,
+            f"Created issue #{result.item_id} → {result.item_url}")
+
+        tickets = await connector.list_items(3)
+        print(f"       Listed {len(tickets)} recent issues from {repo}")
+
+    except Exception as e:
+        log(7, "GitHub Issues connector works", False, str(e))
+    finally:
+        await connector.close()
+
+
 # ── Runner ─────────────────────────────────────────────────────────────────────
 async def main():
     print("=" * 50)
@@ -174,6 +216,7 @@ async def main():
     test_4()
     await test_5()
     await test_6()
+    await test_7()
 
     print("=" * 50)
     passed = sum(1 for _, _, p in results if p)

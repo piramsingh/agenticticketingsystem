@@ -150,6 +150,18 @@ class BaseConnector(ABC):
         """
         return []
 
+    # ── Optional: type discovery ──────────────────────────────────────────────
+
+    async def get_valid_types(self) -> List[str]:
+        """
+        Return the issue/work-item type names that are valid for this project.
+
+        Used by the parser so it picks from real types rather than guessing.
+        Returns an empty list when the connector doesn't support discovery
+        (callers fall back to the static normalize_type map in that case).
+        """
+        return []
+
     # ── Optional: listing ─────────────────────────────────────────────────────
 
     async def list_items(self, limit: int = 10) -> List[dict]:
