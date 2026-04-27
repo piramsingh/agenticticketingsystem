@@ -14,7 +14,7 @@ from .connectors.factory import build as build_connector
 from .sync.engine import SyncEngine
 from .sync.mapper import FieldMapper
 from .sync.poller import ConnectorPoller
-from .api import webhooks, health, mappings, logs, chat, tickets, status
+from .api import webhooks, health, mappings, logs, chat, tickets, status, scan
 from .agent.chat_agent import ChatAgent
 from .agent.ticket_parser import LLMTicketParser
 
@@ -165,6 +165,7 @@ app.include_router(mappings.router)
 app.include_router(logs.router)
 app.include_router(chat.router)
 app.include_router(tickets.router)
+app.include_router(scan.router)
 
 
 @app.get("/")

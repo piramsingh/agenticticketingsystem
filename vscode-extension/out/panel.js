@@ -43,6 +43,7 @@ exports.TicketAgentPanel = void 0;
 const vscode = __importStar(require("vscode"));
 const https = __importStar(require("https"));
 const http = __importStar(require("http"));
+const path = __importStar(require("path"));
 const config_1 = require("./config");
 class TicketAgentPanel {
     constructor(_extensionUri) {
@@ -63,6 +64,12 @@ class TicketAgentPanel {
                 case 'listTickets':
                     await this._listTickets();
                     break;
+                case 'scanCodebase':
+                    await this._scanCodebase();
+                    break;
+                case 'openFile':
+                    await this._openFile(msg.file, msg.line);
+                    break;
                 case 'openUrl':
                     vscode.env.openExternal(vscode.Uri.parse(msg.url));
                     break;
@@ -72,6 +79,23 @@ class TicketAgentPanel {
                     break;
             }
         });
+    }
+    async _openFile(relativePath, line) {
+        const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!folder)
+            return;
+        const absolute = path.isAbsolute(relativePath) ? relativePath : path.join(folder, relativePath);
+        try {
+            const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(absolute));
+            const editor = await vscode.window.showTextDocument(doc, { preview: false });
+            const lineIdx = Math.max(0, (line || 1) - 1);
+            const pos = new vscode.Position(lineIdx, 0);
+            editor.selection = new vscode.Selection(pos, pos);
+            editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+        }
+        catch (e) {
+            vscode.window.showWarningMessage(`Could not open ${relativePath}: ${e.message}`);
+        }
     }
     async prefillFromSelection(text) {
         this._view?.webview.postMessage({ command: 'prefill', text });
@@ -153,6 +177,25 @@ class TicketAgentPanel {
             this._post({ command: 'error', message: 'Could not fetch tickets: ' + e.message });
         }
     }
+    async _scanCodebase() {
+        const folder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!folder) {
+            this._post({ command: 'suggestionsLoaded', suggestions: [], error: 'Open a folder first.' });
+            return;
+        }
+        this._post({ command: 'suggestionsLoading' });
+        try {
+            const res = await this._request('/scan/suggestions', 'POST', {
+                workspace_path: folder,
+                limit: 100,
+            });
+            const suggestions = Array.isArray(res?.suggestions) ? res.suggestions : [];
+            this._post({ command: 'suggestionsLoaded', suggestions });
+        }
+        catch (e) {
+            this._post({ command: 'suggestionsLoaded', suggestions: [], error: e.message });
+        }
+    }
     _post(msg) { this._view?.webview.postMessage(msg); }
     // ── HTML ──────────────────────────────────────────────────────────────────
     _getHtml() {
@@ -176,45 +219,17 @@ class TicketAgentPanel {
     gap: 8px;
     overflow: hidden;
   }
-  /* Platform selector — pills row */
-  .platform-selector {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 6px;
-  }
-  .platform-pill {
-    display: flex; align-items: center; justify-content: center;
-    gap: 5px; padding: 7px 4px; border-radius: 8px;
-    background: linear-gradient(135deg, rgba(255,255,255,0.04), rgba(255,255,255,0.01));
-    -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
-    border: 1px solid rgba(255,255,255,0.06);
-    font-size: 10px; font-weight: 600;
-    color: var(--vscode-descriptionForeground);
-    cursor: default; user-select: none;
-    transition: all 0.18s ease;
-  }
-  .platform-pill .pill-dot {
-    width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; opacity: 0.5;
-  }
-  .platform-pill.active {
-    background: linear-gradient(135deg, rgba(255,255,255,0.10), rgba(255,255,255,0.03));
-    border-color: rgba(255,255,255,0.18);
-    color: var(--vscode-foreground);
-    box-shadow:
-      0 4px 14px rgba(0,0,0,0.20),
-      inset 0 1px 0 rgba(255,255,255,0.08);
-  }
-  .platform-pill.active .pill-dot { opacity: 1; box-shadow: 0 0 6px currentColor; }
-
-  /* Platform status line */
+  /* Platform status line — ambient indicator of the active connector */
   .platform-bar {
-    display: flex; align-items: center; gap: 8px;
-    padding: 4px 8px; font-size: 11px;
+    display: flex; align-items: center; gap: 6px;
+    padding: 4px 2px; font-size: 11px;
     color: var(--vscode-descriptionForeground);
   }
   .platform-dot {
-    width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+    width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
   }
+  .platform-name { font-weight: 600; color: var(--vscode-foreground); }
+  .platform-project { opacity: 0.75; }
   .platform-name { flex: 1; }
   .platform-project { font-size: 10px; font-weight: 400; opacity: 0.75; }
 
@@ -222,20 +237,39 @@ class TicketAgentPanel {
   .input-wrap { position: relative; }
   textarea {
     width: 100%;
-    min-height: 60px;
-    max-height: 200px;
-    padding: 8px;
-    border: 1px solid var(--vscode-input-border);
-    background: var(--vscode-input-background);
+    min-height: 36px;
+    max-height: 120px;
+    padding: 8px 14px;
+    background: linear-gradient(135deg,
+      rgba(255, 255, 255, 0.06),
+      rgba(255, 255, 255, 0.02));
     color: var(--vscode-input-foreground);
-    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 18px;          /* pill — half of min-height */
     resize: none;
     font-family: inherit;
     font-size: inherit;
+    line-height: 1.35;
     overflow-y: auto;
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.06),
+      0 2px 10px rgba(0, 0, 0, 0.15);
+    transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
   }
-  textarea:focus { outline: 1px solid var(--vscode-focusBorder); }
-  textarea::placeholder { color: var(--vscode-input-placeholderForeground); opacity: 0.7; }
+  textarea:focus {
+    outline: none;
+    border-color: rgba(120, 160, 255, 0.40);
+    background: linear-gradient(135deg,
+      rgba(120, 160, 255, 0.08),
+      rgba(255, 255, 255, 0.03));
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.10),
+      0 0 0 3px rgba(120, 160, 255, 0.10),
+      0 4px 14px rgba(0, 0, 0, 0.20);
+  }
+  textarea::placeholder { color: var(--vscode-input-placeholderForeground); opacity: 0.6; }
 
   /* Offline banner */
   .offline-banner {
@@ -258,14 +292,21 @@ class TicketAgentPanel {
 
   /* Empty state */
   .empty-state {
-    display: flex; flex-direction: column; align-items: center;
-    padding: 24px 12px; gap: 8px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 24px 12px; gap: 10px;
     color: var(--vscode-descriptionForeground);
     text-align: center;
   }
-  .empty-state .icon { font-size: 24px; opacity: 0.6; }
-  .empty-state .label { font-size: 12px; font-weight: 600; }
-  .empty-state .hint { font-size: 11px; opacity: 0.8; }
+  /* When empty state is the sole child of the suggestions list, center vertically */
+  .suggestions-list > .empty-state { flex: 1; }
+  .empty-state .icon { opacity: 0.55; display: flex; }
+  .empty-state .label { font-size: 12px; font-weight: 600; color: var(--vscode-foreground); }
+  .empty-state .hint { font-size: 11px; opacity: 0.8; max-width: 220px; line-height: 1.4; }
+
+  /* Inline lucide icons */
+  .lucide { display: inline-flex; vertical-align: middle; flex-shrink: 0; }
+  .spin   { animation: spin 1s linear infinite; }
+  @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
   /* Loading skeleton */
   .skeleton-row {
@@ -472,6 +513,7 @@ class TicketAgentPanel {
     padding-bottom: 0;
   }
   .tab {
+    display: inline-flex; align-items: center; gap: 6px;
     padding: 7px 14px;
     font-size: 12px;
     font-weight: 500;
@@ -496,7 +538,21 @@ class TicketAgentPanel {
     font-size: 11px; color: var(--vscode-descriptionForeground);
   }
   .bulk-bar button { width: auto; padding: 6px 12px; font-size: 11px; }
-  .bulk-bar.disabled { opacity: 0.4; pointer-events: none; }
+  .bulk-bar button:disabled { opacity: 0.4; cursor: default; pointer-events: none; }
+  .bulk-bar.hidden { display: none; }
+  .bulk-left {
+    display: flex; align-items: center; gap: 8px;
+  }
+  .bulk-left label {
+    display: flex; align-items: center; gap: 6px;
+    cursor: pointer; user-select: none;
+  }
+  #select-all-cb {
+    width: 14px; height: 14px;
+    cursor: pointer;
+    accent-color: rgba(120, 160, 255, 0.9);
+    margin: 0;
+  }
 
   .suggestions-list {
     flex: 1; overflow-y: auto;
@@ -513,8 +569,12 @@ class TicketAgentPanel {
     -webkit-backdrop-filter: blur(8px);
     backdrop-filter: blur(8px);
     transition: all 0.15s ease;
+    cursor: pointer;
   }
-  .suggestion-card:hover { border-color: rgba(255,255,255,0.12); }
+  .suggestion-card:hover {
+    border-color: rgba(255,255,255,0.16);
+    background: linear-gradient(135deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02));
+  }
   .suggestion-card.selected {
     border-color: rgba(120, 160, 255, 0.6);
     background: linear-gradient(135deg,
@@ -596,42 +656,81 @@ class TicketAgentPanel {
     cursor: pointer; text-decoration: underline; display: inline-block;
   }
 
-  /* Ticket list rows */
-  .list-header { font-size: 11px; font-weight: 600; color: var(--vscode-descriptionForeground); margin-bottom: 4px; }
-  .ticket-row {
-    display: flex; align-items: center; gap: 8px;
-    padding: 5px 4px; border-radius: 4px; cursor: pointer;
+  /* Ticket list — uses the same card pattern as suggestions for visual consistency */
+  .list-header-row {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 8px;
   }
-  .ticket-row:hover { background: var(--vscode-list-hoverBackground); }
-  .ticket-id-sm { font-size: 10px; color: var(--vscode-descriptionForeground); min-width: 28px; }
-  .ticket-title-sm { flex: 1; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .list-header {
+    font-size: 11px; font-weight: 600;
+    color: var(--vscode-descriptionForeground);
+    margin-bottom: 8px;
+  }
+  .list-header-row .list-header { margin-bottom: 0; }
+
+  /* Generic small icon button — used for Close / dismiss controls */
+  button.icon-btn {
+    width: auto;
+    padding: 3px;
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--vscode-descriptionForeground);
+    border-radius: 6px;
+    box-shadow: none;
+    transition: all 0.15s ease;
+    display: inline-flex; align-items: center; justify-content: center;
+    -webkit-backdrop-filter: none; backdrop-filter: none;
+  }
+  button.icon-btn:hover {
+    background: rgba(255,255,255,0.08);
+    border-color: rgba(255,255,255,0.12);
+    color: var(--vscode-foreground);
+    transform: none;
+    box-shadow: none;
+  }
+  .ticket-row {
+    display: flex; flex-direction: column; gap: 6px;
+    padding: 10px;
+    background: linear-gradient(135deg,
+      rgba(255,255,255,0.04), rgba(255,255,255,0.01));
+    border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 10px;
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    margin-bottom: 8px;
+  }
+  .ticket-row:last-child { margin-bottom: 0; }
+  .ticket-row:hover {
+    border-color: rgba(255,255,255,0.16);
+    background: linear-gradient(135deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02));
+  }
+  .ticket-row .ticket-title-sm {
+    font-size: 12px; font-weight: 600;
+    color: var(--vscode-foreground);
+    line-height: 1.4;
+    /* allow wrapping — no more truncation */
+    white-space: normal; overflow: visible; text-overflow: clip;
+  }
+  .ticket-row .ticket-meta {
+    display: flex; align-items: center; gap: 8px;
+    flex-wrap: wrap;
+  }
+  .ticket-row .ticket-assignee {
+    font-size: 11px;
+    color: var(--vscode-descriptionForeground);
+  }
   .badge-sm {
-    font-size: 10px; padding: 1px 5px; border-radius: 8px;
-    background: var(--vscode-badge-background);
-    color: var(--vscode-badge-foreground); white-space: nowrap;
+    font-size: 10px; padding: 1px 6px; border-radius: 8px;
+    background: rgba(120, 160, 255, 0.18);
+    color: var(--vscode-foreground);
+    font-weight: 600;
+    white-space: nowrap;
   }
 </style>
 </head>
 <body>
-
-<div class="platform-selector" id="platform-selector">
-  <div class="platform-pill" data-platform="jira">
-    <div class="pill-dot" style="background:#0052CC;color:#0052CC"></div>
-    <span>Jira</span>
-  </div>
-  <div class="platform-pill" data-platform="azure_devops">
-    <div class="pill-dot" style="background:#0078D4;color:#0078D4"></div>
-    <span>Azure</span>
-  </div>
-  <div class="platform-pill" data-platform="github_issues">
-    <div class="pill-dot" style="background:#8B949E;color:#8B949E"></div>
-    <span>GitHub</span>
-  </div>
-  <div class="platform-pill" data-platform="linear">
-    <div class="pill-dot" style="background:#5E6AD2;color:#5E6AD2"></div>
-    <span>Linear</span>
-  </div>
-</div>
 
 <div class="platform-bar" id="platform-bar">
   <div class="platform-dot" id="platform-dot" style="background:#888"></div>
@@ -645,37 +744,39 @@ class TicketAgentPanel {
 </div>
 
 <div class="tabs">
-  <div class="tab active" data-tab="chat">Chat</div>
-  <div class="tab" data-tab="suggestions">Suggestions</div>
+  <div class="tab active" data-tab="chat" data-icon="message-square"><span>Chat</span></div>
+  <div class="tab" data-tab="suggestions" data-icon="sparkles"><span>Suggestions</span></div>
 </div>
 
 <div class="tab-panel active" data-panel="chat">
-  <div class="chat-actions">
-    <span class="action-link" id="btn-list">Recent tickets</span>
-  </div>
   <div id="output"></div>
   <div class="input-row">
     <div class="input-wrap">
       <div id="mention-dropdown"></div>
-      <textarea id="input" placeholder="Describe a ticket — Enter to send, Shift+Enter for newline"></textarea>
+      <textarea id="input" rows="1" placeholder="Describe a ticket… or /recent"></textarea>
     </div>
-    <button id="btn-create" class="send-btn" title="Send">↑</button>
+    <button id="btn-create" class="send-btn" title="Send" data-icon="arrow-up" data-icon-size="16"></button>
   </div>
 </div>
 
 <div class="tab-panel" data-panel="suggestions">
-  <button id="btn-scan">Scan Codebase</button>
-  <div class="bulk-bar disabled" id="bulk-bar">
-    <span id="bulk-count">0 selected</span>
-    <button id="btn-bulk-create" class="secondary">Create Selected</button>
+  <div class="bulk-bar hidden" id="bulk-bar">
+    <div class="bulk-left">
+      <label>
+        <input type="checkbox" id="select-all-cb">
+        <span id="bulk-count">Select all</span>
+      </label>
+    </div>
+    <button id="btn-bulk-create" class="secondary" disabled>Create Selected</button>
   </div>
   <div class="suggestions-list" id="suggestions-list">
     <div class="empty-state">
-      <div class="icon">🔎</div>
+      <div class="icon" data-icon="search" data-icon-size="32"></div>
       <div class="label">No scan run yet</div>
       <div class="hint">Scan your codebase to surface work that needs doing.</div>
     </div>
   </div>
+  <button id="btn-scan" data-icon="sparkles"><span>Scan Codebase</span></button>
 </div>
 
 <script>
@@ -696,7 +797,7 @@ class TicketAgentPanel {
   // ── Auto-resize textarea ──────────────────────────────────────────────────
   function autosize() {
     input.style.height = 'auto';
-    input.style.height = Math.min(input.scrollHeight, 200) + 'px';
+    input.style.height = Math.min(input.scrollHeight, 120) + 'px';
   }
   input.addEventListener('input', autosize);
 
@@ -765,13 +866,15 @@ class TicketAgentPanel {
     if (!suggestions.length) {
       suggestionsList.innerHTML =
         '<div class="empty-state">' +
-          '<div class="icon">✓</div>' +
+          '<div class="icon">' + lucide('check-circle', 32) + '</div>' +
           '<div class="label">All caught up</div>' +
           '<div class="hint">No suggestions right now. Run another scan to refresh.</div>' +
         '</div>';
+      bulkBar.classList.add('hidden');
       updateBulkBar();
       return;
     }
+    bulkBar.classList.remove('hidden');
 
     suggestionsList.innerHTML = suggestions.map(s => {
       return '<div class="suggestion-card" data-id="' + s.id + '">' +
@@ -796,10 +899,37 @@ class TicketAgentPanel {
   }
 
   function updateBulkBar() {
+    const all     = suggestionsList.querySelectorAll('.suggestion-checkbox');
     const checked = suggestionsList.querySelectorAll('.suggestion-checkbox:checked').length;
-    bulkCount.textContent = checked + ' selected';
-    bulkBar.classList.toggle('disabled', checked === 0);
+    const total   = all.length;
+
+    bulkCount.textContent = checked === 0
+      ? 'Select all'
+      : checked + ' of ' + total + ' selected';
+
+    btnBulkCreate.disabled = checked === 0;
+
+    const masterCb = document.getElementById('select-all-cb');
+    if (total === 0) {
+      masterCb.checked = false;
+      masterCb.indeterminate = false;
+      masterCb.disabled = true;
+    } else {
+      masterCb.disabled = false;
+      masterCb.checked = checked === total;
+      masterCb.indeterminate = checked > 0 && checked < total;
+    }
   }
+
+  document.getElementById('select-all-cb').addEventListener('change', e => {
+    const shouldCheck = e.target.checked;
+    suggestionsList.querySelectorAll('.suggestion-checkbox').forEach(cb => {
+      cb.checked = shouldCheck;
+      const card = cb.closest('.suggestion-card');
+      if (card) { card.classList.toggle('selected', shouldCheck); }
+    });
+    updateBulkBar();
+  });
 
   function suggestionToPrompt(s) {
     return 'Create a ' + s.type.toLowerCase() + ': ' + s.title +
@@ -807,17 +937,7 @@ class TicketAgentPanel {
   }
 
   btnScan.addEventListener('click', () => {
-    suggestionsList.innerHTML =
-      '<div class="empty-state">' +
-        '<div class="icon">⏳</div>' +
-        '<div class="label">Scanning...</div>' +
-        '<div class="hint">Looking for TODOs, missing tests, refactors, and more.</div>' +
-      '</div>';
-    // TODO(backend): swap setTimeout for vscode.postMessage({ command: 'scanCodebase' })
-    setTimeout(() => {
-      suggestions = MOCK_SUGGESTIONS.slice();
-      renderSuggestions();
-    }, 800);
+    vscode.postMessage({ command: 'scanCodebase' });
   });
 
   btnBulkCreate.addEventListener('click', () => {
@@ -849,13 +969,28 @@ class TicketAgentPanel {
   });
 
   suggestionsList.addEventListener('click', e => {
+    // Action buttons (Create / Dismiss) take priority
     const btn = e.target.closest('button[data-action]');
-    if (!btn) return;
-    const id = btn.getAttribute('data-id');
-    if (btn.getAttribute('data-action') === 'create') {
-      createSuggestion(id);
-    } else if (btn.getAttribute('data-action') === 'dismiss') {
-      dismissSuggestion(id);
+    if (btn) {
+      const id = btn.getAttribute('data-id');
+      if (btn.getAttribute('data-action') === 'create') {
+        createSuggestion(id);
+      } else if (btn.getAttribute('data-action') === 'dismiss') {
+        dismissSuggestion(id);
+      }
+      return;
+    }
+
+    // Ignore clicks on the checkbox itself (its 'change' handler covers selection)
+    if (e.target.closest('input[type="checkbox"]')) return;
+
+    // Otherwise: clicking the card opens the file at that line
+    const card = e.target.closest('.suggestion-card');
+    if (!card) return;
+    const cardId = card.getAttribute('data-id');
+    const s = suggestions.find(x => x.id === cardId);
+    if (s) {
+      vscode.postMessage({ command: 'openFile', file: s.file, line: s.line });
     }
   });
 
@@ -864,6 +999,33 @@ class TicketAgentPanel {
   function esc(t) {
     return String(t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
+
+  // Inline lucide.dev icons. Stroke uses currentColor so they inherit text color.
+  const LUCIDE_PATHS = {
+    'search':          '<circle cx="11" cy="11" r="8"/><line x1="21" x2="16.65" y1="21" y2="16.65"/>',
+    'check-circle':    '<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>',
+    'loader':          '<line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/><line x1="4.93" y1="19.07" x2="7.76" y2="16.24"/><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"/>',
+    'alert-triangle':  '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" x2="12" y1="9" y2="13"/><line x1="12" x2="12.01" y1="17" y2="17"/>',
+    'inbox':           '<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
+    'arrow-up':        '<path d="m5 12 7-7 7 7"/><path d="M12 19V5"/>',
+    'sparkles':        '<path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/><path d="M4 17v2"/><path d="M5 18H3"/>',
+    'message-square':  '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+    'x':               '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+  };
+  function lucide(name, size) {
+    size = size || 16;
+    const body = LUCIDE_PATHS[name] || '';
+    return '<svg class="lucide" xmlns="http://www.w3.org/2000/svg" width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + body + '</svg>';
+  }
+  // Inject icons into any element with [data-icon]
+  function injectIcons() {
+    document.querySelectorAll('[data-icon]').forEach(el => {
+      const name = el.getAttribute('data-icon');
+      const size = parseInt(el.getAttribute('data-icon-size') || '14', 10);
+      el.insertAdjacentHTML('afterbegin', lucide(name, size));
+    });
+  }
+  injectIcons();
 
   function avatarColor(name) {
     const colors = ['#e05c5c','#e08a3c','#d4a62a','#5cb85c','#3c9ae0','#7c5cbf','#d45c8a','#3ca0a0'];
@@ -970,20 +1132,46 @@ class TicketAgentPanel {
 
   // ── Ticket actions ────────────────────────────────────────────────────────
 
+  // Slash commands available in the chat input
+  const SLASH_COMMANDS = {
+    'recent': () => vscode.postMessage({ command: 'listTickets' }),
+    'help':   () => addMsg('Available commands: ' +
+      Object.keys(SLASH_COMMANDS).map(c => '<code>/' + c + '</code>').join(', '), 'system'),
+  };
+
+  function handleSlashCommand(text) {
+    const cmd = text.slice(1).split(/\s+/)[0].toLowerCase();
+    const handler = SLASH_COMMANDS[cmd];
+    if (handler) {
+      handler();
+    } else {
+      addMsg('Unknown command <code>/' + esc(cmd) + '</code>. Try <code>/help</code>.', 'error');
+    }
+  }
+
   document.getElementById('btn-create').addEventListener('click', () => {
     const text = input.value.trim();
     if (!text) return;
-    addMsg(esc(text), 'user');
     input.value = '';
+    autosize();
+    if (text.startsWith('/')) {
+      handleSlashCommand(text);
+      return;
+    }
+    addMsg(esc(text), 'user');
     vscode.postMessage({ command: 'createTicket', text });
   });
 
-  document.getElementById('btn-list').addEventListener('click', () => {
-    vscode.postMessage({ command: 'listTickets' });
-  });
-
-  // Click delegation — ticket links and rows
+  // Click delegation — ticket links, rows, and dismiss buttons
   document.addEventListener('click', e => {
+    // Dismiss takes priority — clicking X removes the surrounding agent message
+    const dismiss = e.target.closest('.dismiss-msg');
+    if (dismiss) {
+      const msgEl = dismiss.closest('.msg');
+      if (msgEl) { msgEl.remove(); }
+      e.stopPropagation();
+      return;
+    }
     const link = e.target.closest('.ticket-link');
     const row  = e.target.closest('.ticket-row');
     const url  = (link || row)?.dataset?.url;
@@ -1001,12 +1189,6 @@ class TicketAgentPanel {
         platformName.textContent = msg.connected ? msg.displayName : msg.displayName + ' — offline';
         platformProject.textContent = msg.project ? '· ' + msg.project : '';
         offlineBanner.classList.toggle('visible', !msg.connected);
-        // Highlight the active platform pill
-        document.querySelectorAll('.platform-pill').forEach(p => p.classList.remove('active'));
-        if (msg.connected && msg.connectorType) {
-          const active = document.querySelector('.platform-pill[data-platform="' + msg.connectorType + '"]');
-          if (active) { active.classList.add('active'); }
-        }
         break;
 
       case 'membersLoaded':
@@ -1035,6 +1217,40 @@ class TicketAgentPanel {
         } else {
           addMsg(esc(r.error || r.message || 'Failed to create ticket'), 'error');
         }
+        break;
+      }
+
+      case 'suggestionsLoading': {
+        bulkBar.classList.add('hidden');
+        suggestionsList.innerHTML =
+          '<div class="empty-state">' +
+            '<div class="icon spin">' + lucide('loader', 32) + '</div>' +
+            '<div class="label">Scanning...</div>' +
+            '<div class="hint">Looking for TODOs, FIXMEs, and refactor markers.</div>' +
+          '</div>';
+        break;
+      }
+
+      case 'suggestionsLoaded': {
+        if (msg.error) {
+          bulkBar.classList.add('hidden');
+          suggestionsList.innerHTML =
+            '<div class="empty-state">' +
+              '<div class="icon">' + lucide('alert-triangle', 32) + '</div>' +
+              '<div class="label">Scan failed</div>' +
+              '<div class="hint">' + esc(msg.error) + '</div>' +
+            '</div>';
+          break;
+        }
+        suggestions = (msg.suggestions || []).map(s => ({
+          id:      s.id,
+          type:    s.type,
+          title:   s.title,
+          file:    s.file,
+          line:    s.line,
+          snippet: s.snippet,
+        }));
+        renderSuggestions();
         break;
       }
 
@@ -1067,7 +1283,7 @@ class TicketAgentPanel {
           empty.className = 'msg agent';
           empty.innerHTML =
             '<div class="empty-state">' +
-              '<div class="icon">📋</div>' +
+              '<div class="icon">' + lucide('inbox', 32) + '</div>' +
               '<div class="label">No tickets yet</div>' +
               '<div class="hint">Create one above to get started.</div>' +
             '</div>';
@@ -1079,13 +1295,18 @@ class TicketAgentPanel {
         const div = document.createElement('div');
         div.className = 'msg agent';
         div.innerHTML =
-          '<div class="list-header">Recent Tickets</div>' +
+          '<div class="list-header-row">' +
+            '<div class="list-header">Recent Tickets</div>' +
+            '<button class="icon-btn dismiss-msg" title="Close">' + lucide('x', 14) + '</button>' +
+          '</div>' +
           msg.tickets.map(t => {
             const assignee = t.assignedTo || 'Unassigned';
             return '<div class="ticket-row" data-url="' + esc(t.url || '') + '">' +
-              avatarHtml(assignee) +
-              '<span class="ticket-title-sm">' + esc(t.title) + '</span>' +
-              '<span class="badge-sm">' + esc(t.status) + '</span>' +
+              '<div class="ticket-title-sm">' + esc(t.title) + '</div>' +
+              '<div class="ticket-meta">' +
+                (t.status ? '<span class="badge-sm">' + esc(t.status) + '</span>' : '') +
+                '<span class="ticket-assignee">' + esc(assignee) + '</span>' +
+              '</div>' +
             '</div>';
           }).join('');
         output.appendChild(div);
